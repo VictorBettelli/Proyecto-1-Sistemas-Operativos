@@ -18,7 +18,9 @@ public class LinkedList<T> {
         tail = null;
         size = 0;
     }
-    
+    /**
+     * Agrega un elemento al final de la lista
+     */
     public void add(T data) {
         Node<T> newNode = new Node<>(data);
         if (head == null) {
@@ -30,7 +32,9 @@ public class LinkedList<T> {
         }
         size++;
     }
-    
+    /**
+     * Agrega un elemento al inicio de la lista
+     */
     public void addFirst(T data) {
         Node<T> newNode = new Node<>(data);
         if (head == null) {
@@ -42,7 +46,9 @@ public class LinkedList<T> {
         }
         size++;
     }
-    
+    /**
+     * Inserta un elemento en una posición específica
+     */
     public void insert(int index, T data) {
         if (index < 0 || index > size) {
             throw new IndexOutOfBoundsException("Índice: " + index + ", Tamaño: " + size);
@@ -62,7 +68,9 @@ public class LinkedList<T> {
             size++;
         }
     }
-    
+    /**
+     * Obtiene un elemento por índice
+     */
     public T get(int index) {
         if (index < 0 || index >= size) {
             throw new IndexOutOfBoundsException("Índice: " + index + ", Tamaño: " + size);
@@ -130,7 +138,9 @@ public class LinkedList<T> {
         
         return false;
     }
-    
+    /**
+     * Verifica si la lista contiene un elemento
+     */
     public boolean contains(T data) {
         Node<T> current = head;
         while (current != null) {
@@ -141,7 +151,9 @@ public class LinkedList<T> {
         }
         return false;
     }
-    
+    /**
+     * Busca el índice de un elemento
+     */
     public int indexOf(T data) {
         Node<T> current = head;
         int index = 0;
