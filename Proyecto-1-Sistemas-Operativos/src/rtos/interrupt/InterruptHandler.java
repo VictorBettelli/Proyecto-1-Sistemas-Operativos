@@ -1,0 +1,510 @@
+/*
+ * Click nbfs://nbhost/SystemFileSystem/Templates/Licenses/license-default.txt to change this license
+ * Click nbfs://nbhost/SystemFileSystem/Templates/Classes/Class.java to edit this template
+ */
+package rtos.interrupt;
+
+import rtos.structures.PriorityQueue;
+import rtos.structures.LinkedList;
+import rtos.scheduler.SchedulerManager;
+import rtos.utils.InterruptComparator;
+import rtos.utils.Semaphore;
+/**
+ *
+ * @author VictorB
+ */
+/**
+ * Manejador de interrupciones con Threads y Semáforos.
+ * Implementa el patrón Worker Thread para procesar interrupciones asíncronamente.
+ * Cumple con los requerimientos del proyecto: uso de Threads y Semáforos.
+ */
+public class InterruptHandler {
+    // Cola de interrupciones pendientes (ordenadas por prioridad)
+    private PriorityQueue<InterruptRequest> interruptQueue;
+    
+    // Lista de handlers registrados por tipo
+    private LinkedList<HandlerEntry> handlerRegistry;
+    
+    // Threads trabajadores que procesan interrupciones
+    private LinkedList<InterruptWorker> workers;
+    
+    // Referencia al planificador para notificar eventos
+    private SchedulerManager schedulerManager;
+    
+    // Control de ejecución
+    private volatile boolean running;
+    
+    // Semaforos para sincronización
+    private Semaphore queueSemaphore;    // Protege la cola (mutex)
+    private Semaphore workerSemaphore;   // Señaliza trabajo disponible
+    
+    // Número de workers activos
+    private final int NUM_WORKERS = 2;   // Puedes ajustar según necesidades
+    
+    /**
+     * Entrada en el registro de handlers.
+     * Contiene tipo, handler y si necesita thread dedicado.
+     */
+    private static class HandlerEntry {
+        InterruptType type;
+        Runnable handler;
+        String description;
+        boolean requiresDedicatedThread;
+        
+        HandlerEntry(InterruptType type, Runnable handler, 
+                    String description, boolean requiresDedicatedThread) {
+            this.type = type;
+            this.handler = handler;
+            this.description = description;
+            this.requiresDedicatedThread = requiresDedicatedThread;
+        }
+        
+        @Override
+        public String toString() {
+            return String.format("Handler[%s: %s]", type, description);
+        }
+    }
+    
+    /**
+     * Thread trabajador que procesa interrupciones de la cola.
+     */
+    private class InterruptWorker extends Thread {
+        private boolean active;
+        private int processedCount;
+        
+        public InterruptWorker(String name) {
+            super(name);
+            this.active = true;
+            this.processedCount = 0;
+        }
+        
+        @Override
+        public void run() {
+            System.out.println(getName() + " iniciado.");
+            
+            while (active && running) {
+                try {
+                    // Esperar por trabajo disponible
+                    workerSemaphore.acquire();
+                    
+                    if (!active || !running) {
+                        break;
+                    }
+                    
+                    // Obtener interrupción de la cola (con exclusión mutua)
+                    queueSemaphore.acquire();
+                    InterruptRequest request = null;
+                    if (!interruptQueue.isEmpty()) {
+                        request = interruptQueue.extractMin();
+                    }
+                    queueSemaphore.release();
+                    
+                    if (request != null) {
+                        processInterrupt(request);
+                        processedCount++;
+                    }
+                    
+                } catch (InterruptedException e) {
+                    System.out.println(getName() + " interrumpido.");
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            
+            System.out.println(getName() + " finalizado. Procesó " + processedCount + " interrupciones.");
+        }
+        
+        public void stopWorker() {
+            active = false;
+            this.interrupt();
+        }
+        
+        public int getProcessedCount() {
+            return processedCount;
+        }
+    }
+    
+    /**
+     * Constructor principal.
+     * @param schedulerManager Referencia al planificador
+     */
+    public InterruptHandler(SchedulerManager schedulerManager) {
+        this.interruptQueue = new PriorityQueue<>(new InterruptComparator());
+        this.handlerRegistry = new LinkedList<>();
+        this.workers = new LinkedList<>();
+        this.schedulerManager = schedulerManager;
+        this.running = true;
+        
+        // Inicializar semáforos
+        this.queueSemaphore = new Semaphore(1);   // Mutex para la cola
+        this.workerSemaphore = new Semaphore(0);  // Inicialmente sin trabajo
+        
+        // Configurar handlers por defecto
+        setupDefaultHandlers();
+        
+        // Iniciar threads trabajadores
+        startWorkerThreads();
+        
+        System.out.println("InterruptHandler iniciado con " + NUM_WORKERS + " workers.");
+    }
+    
+    /**
+     * Inicia los threads trabajadores.
+     */
+    private void startWorkerThreads() {
+        for (int i = 0; i < NUM_WORKERS; i++) {
+            InterruptWorker worker = new InterruptWorker("InterruptWorker-" + (i + 1));
+            worker.start();
+            workers.add(worker);
+        }
+    }
+    
+    /**
+     * Configura los handlers por defecto para cada tipo de interrupción.
+     */
+    private void setupDefaultHandlers() {
+        // MICROMETEORITE - Máxima prioridad, necesita thread dedicado
+        registerHandler(InterruptType.MICROMETEORITE, 
+            () -> handleMicrometeorite(),
+            "Emergencia: impacto de micro-meteorito", 
+            true);
+        
+        // SOLAR_FLARE - Alta prioridad
+        registerHandler(InterruptType.SOLAR_FLARE,
+            () -> handleSolarFlare(),
+            "Alerta: ráfaga solar detectada",
+            false);
+        
+        // GROUND_COMMAND - Media prioridad
+        registerHandler(InterruptType.GROUND_COMMAND,
+            () -> handleGroundCommand(),
+            "Comando recibido desde estación terrestre",
+            false);
+        
+        // IO_COMPLETION - Baja prioridad
+        registerHandler(InterruptType.IO_COMPLETION,
+            () -> handleIOCompletion(),
+            "Operación de E/S completada",
+            false);
+        
+        // DEADLINE_MISSED - Alta prioridad
+        registerHandler(InterruptType.DEADLINE_MISSED,
+            () -> handleDeadlineMissed(),
+            "Proceso no cumplió deadline",
+            false);
+        
+        // SYSTEM_ERROR - Máxima prioridad, necesita thread dedicado
+        registerHandler(InterruptType.SYSTEM_ERROR,
+            () -> handleSystemError(),
+            "Error crítico del sistema",
+            true);
+    }
+    
+    /**
+     * Registra un handler para un tipo de interrupción.
+     */
+    public void registerHandler(InterruptType type, Runnable handler, 
+                               String description, boolean requiresDedicatedThread) {
+        handlerRegistry.add(new HandlerEntry(type, handler, description, requiresDedicatedThread));
+        System.out.println("Handler registrado: " + type + " - " + description);
+    }
+    
+    /**
+     * Genera una nueva interrupción.
+     * @param type Tipo de interrupción
+     * @param priority Prioridad (1-5)
+     * @param source Dispositivo fuente
+     */
+    public void raiseInterrupt(InterruptType type, int priority, String source) {
+        if (!running) {
+            System.out.println("InterruptHandler detenido, ignorando interrupción.");
+            return;
+        }
+        
+        InterruptRequest request = new InterruptRequest(type, priority, source);
+        
+        try {
+            // Agregar a la cola (con exclusión mutua)
+            queueSemaphore.acquire();
+            interruptQueue.insert(request);
+            queueSemaphore.release();
+            
+            // Señalizar que hay trabajo disponible
+            workerSemaphore.release();
+            
+            // Log de generación
+            logEvent("Interrupción GENERADA: " + request);
+            
+            // Si es de máxima prioridad, forzar procesamiento inmediato
+            if (priority >= 4) { // Prioridades 4 y 5
+                System.out.println("⚠️  Interrupción de ALTA PRIORIDAD - Procesando inmediatamente");
+                workerSemaphore.release(); // Asegurar procesamiento rápido
+            }
+            
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            System.out.println("Error al generar interrupción: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Procesa una interrupción específica.
+     */
+    private void processInterrupt(InterruptRequest request) {
+        logEvent("Procesando interrupción: " + request.getType());
+        
+        // Buscar handler
+        HandlerEntry entry = findHandlerEntry(request.getType());
+        
+        if (entry != null) {
+            if (entry.requiresDedicatedThread) {
+                // Crear thread dedicado para interrupciones críticas
+                createDedicatedThread(entry, request);
+            } else {
+                // Ejecutar en el worker thread actual
+                executeHandler(entry.handler, request);
+            }
+            
+            request.markHandled();
+            logEvent("Interrupción ATENDIDA: " + request.getType());
+        } else {
+            System.out.println("⚠️  No hay handler registrado para: " + request.getType());
+        }
+    }
+    
+    /**
+     * Crea un thread dedicado para interrupciones críticas.
+     */
+    private void createDedicatedThread(HandlerEntry entry, InterruptRequest request) {
+        Thread dedicatedThread = new Thread(() -> {
+            logEvent("Thread DEDICADO iniciado para: " + entry.type);
+            
+            // Notificar al scheduler sobre interrupción crítica
+            notifySchedulerCriticalInterrupt(request);
+            
+            // Ejecutar handler
+            executeHandler(entry.handler, request);
+            
+            logEvent("Thread DEDICADO finalizado para: " + entry.type);
+        }, "Dedicated-ISR-" + entry.type);
+        
+        dedicatedThread.start();
+    }
+    
+    /**
+     * Ejecuta un handler de interrupción.
+     */
+    private void executeHandler(Runnable handler, InterruptRequest request) {
+        try {
+            long startTime = System.currentTimeMillis();
+            handler.run();
+            long duration = System.currentTimeMillis() - startTime;
+            
+            logEvent(String.format("Handler ejecutado en %d ms para: %s", 
+                     duration, request.getType()));
+                     
+        } catch (Exception e) {
+            System.out.println("❌ ERROR en handler para " + request.getType() + ": " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+    
+    /**
+     * Busca un handler entry por tipo.
+     */
+    private HandlerEntry findHandlerEntry(InterruptType type) {
+        for (int i = 0; i < handlerRegistry.size(); i++) {
+            HandlerEntry entry = handlerRegistry.get(i);
+            if (entry.type == type) {
+                return entry;
+            }
+        }
+        return null;
+    }
+    
+    // ========== HANDLERS ESPECÍFICOS ==========
+    
+    private void handleMicrometeorite() {
+        System.out.println("🚨🚨🚨 ALERTA MÁXIMA: IMPACTO DE MICRO-METEORITO DETECTADO");
+        System.out.println("   -> Activando protocolos de emergencia");
+        System.out.println("   -> Aislando secciones afectadas");
+        System.out.println("   -> Redirigiendo potencia a sistemas críticos");
+        
+        if (schedulerManager != null) {
+            // Notificar al scheduler para replanificación de emergencia
+            schedulerManager.handleEmergency();
+        }
+    }
+    
+    private void handleSolarFlare() {
+        System.out.println("⚠️⚠️ ALERTA: RÁFAGA SOLAR DETECTADA");
+        System.out.println("   -> Reduciendo potencia en paneles solares");
+        System.out.println("   -> Orientando nave para protección");
+        System.out.println("   -> Activando blindaje electromagnético");
+    }
+    
+    private void handleGroundCommand() {
+        System.out.println("📡 COMANDO DESDE TIERRA RECIBIDO");
+        System.out.println("   -> Procesando instrucciones...");
+        System.out.println("   -> Validando autorización...");
+        System.out.println("   -> Ejecutando comando...");
+    }
+    
+    private void handleIOCompletion() {
+        System.out.println("✅ OPERACIÓN DE E/S COMPLETADA");
+        if (schedulerManager != null) {
+            schedulerManager.notifyIOCompletion();
+        }
+    }
+    
+    private void handleDeadlineMissed() {
+        System.out.println("⏰⏰ DEADLINE INCUMPLIDO DETECTADO");
+        System.out.println("   -> Revisando procesos atrasados");
+        System.out.println("   -> Recalculando planificación");
+        
+        if (schedulerManager != null) {
+            schedulerManager.handleDeadlineMissed();
+        }
+    }
+    
+    private void handleSystemError() {
+        System.out.println("❌❌❌ ERROR CRÍTICO DEL SISTEMA");
+        System.out.println("   -> Iniciando diagnóstico automático");
+        System.out.println("   -> Activando sistemas redundantes");
+        System.out.println("   -> Notificando a estación terrestre");
+        
+        if (schedulerManager != null) {
+            schedulerManager.handleSystemError();
+        }
+    }
+    
+    // ========== MÉTODOS DE NOTIFICACIÓN ==========
+    
+    private void notifySchedulerCriticalInterrupt(InterruptRequest request) {
+        if (schedulerManager != null) {
+            // Método que debes implementar en SchedulerManager
+            schedulerManager.onCriticalInterrupt(request);
+        }
+    }
+    
+    private void logEvent(String message) {
+        String timestamp = String.format("[%tT]", System.currentTimeMillis());
+        String threadName = Thread.currentThread().getName();
+        String logMessage = timestamp + " [" + threadName + "] " + message;
+        
+        System.out.println(logMessage);
+        
+        // También podrías enviar a la GUI si está configurada
+        if (schedulerManager != null) {
+            schedulerManager.logEvent(logMessage);
+        }
+    }
+    
+    // ========== MÉTODOS PÚBLICOS ==========
+    
+    /**
+     * Detiene el InterruptHandler y todos sus threads.
+     */
+    public void shutdown() {
+        System.out.println("Deteniendo InterruptHandler...");
+        running = false;
+        
+        // Detener todos los workers
+        for (int i = 0; i < workers.size(); i++) {
+            workers.get(i).stopWorker();
+        }
+        
+        // Liberar todos los workers que estén esperando
+        workerSemaphore.release(workers.size());
+        
+        System.out.println("InterruptHandler detenido.");
+    }
+    
+    /**
+     * Obtiene el número de interrupciones pendientes.
+     */
+    public int getPendingInterruptCount() {
+        try {
+            queueSemaphore.acquire();
+            int count = interruptQueue.size();
+            queueSemaphore.release();
+            return count;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return 0;
+        }
+    }
+    
+    /**
+     * Obtiene una copia de las interrupciones pendientes.
+     */
+    public LinkedList<InterruptRequest> getPendingInterrupts() {
+        LinkedList<InterruptRequest> copy = new LinkedList<>();
+        try {
+            queueSemaphore.acquire();
+            for (int i = 0; i < interruptQueue.size(); i++) {
+                copy.add(interruptQueue.get(i));
+            }
+            queueSemaphore.release();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return copy;
+    }
+    
+    /**
+     * Obtiene estadísticas de los workers.
+     */
+    public String getWorkerStats() {
+        StringBuilder stats = new StringBuilder();
+        stats.append("=== Estadísticas de Workers ===\n");
+        for (int i = 0; i < workers.size(); i++) {
+            InterruptWorker worker = workers.get(i);
+            stats.append(String.format("  %s: %d interrupciones procesadas\n", 
+                         worker.getName(), worker.getProcessedCount()));
+        }
+        stats.append("Interrupciones pendientes: ").append(getPendingInterruptCount());
+        return stats.toString();
+    }
+    
+    /**
+     * Genera una interrupción aleatoria (para pruebas).
+     */
+    public void generateRandomInterrupt() {
+        InterruptType[] types = InterruptType.values();
+        InterruptType randomType = types[(int) (Math.random() * types.length)];
+        
+        int priority = switch (randomType) {
+            case MICROMETEORITE -> 5;
+            case SYSTEM_ERROR -> 4;
+            case SOLAR_FLARE -> 3;
+            case DEADLINE_MISSED -> 2;
+            case GROUND_COMMAND, IO_COMPLETION -> 1;
+            default -> 1;
+        };
+        
+        String[] devices = {"Paneles Solares", "Sistema de Navegación", 
+                           "Comunicaciones", "Sensores", "Propulsión", "CPU", "RAM"};
+        String randomDevice = devices[(int) (Math.random() * devices.length)];
+        
+        raiseInterrupt(randomType, priority, randomDevice);
+    }
+    
+    /**
+     * Verifica si el handler está en ejecución.
+     */
+    public boolean isRunning() {
+        return running;
+    }
+    
+    /**
+     * Obtiene la lista de handlers registrados.
+     */
+    public LinkedList<HandlerEntry> getRegisteredHandlers() {
+        LinkedList<HandlerEntry> copy = new LinkedList<>();
+        for (int i = 0; i < handlerRegistry.size(); i++) {
+            copy.add(handlerRegistry.get(i));
+        }
+        return copy;
+    }
+}
