@@ -19,31 +19,39 @@ import rtos.utils.Semaphore;
  * Cumple con los requerimientos del proyecto: uso de Threads y Semáforos.
  */
 public class InterruptHandler {
-    // Cola de interrupciones pendientes (ordenadas por prioridad)
     private PriorityQueue<InterruptRequest> interruptQueue;
     
-    // Lista de handlers registrados por tipo
+    // Lista de handlers registrados
     private LinkedList<HandlerEntry> handlerRegistry;
     
-    // Threads trabajadores que procesan interrupciones
+    // Threads trabajadores
     private LinkedList<InterruptWorker> workers;
     
-    // Referencia al planificador para notificar eventos
+    // Referencia al planificador
     private SchedulerManager schedulerManager;
+    
+    // Callback para notificar a SimulationEngine
+    private InterruptCallback interruptCallback;
     
     // Control de ejecución
     private volatile boolean running;
     
     // Semaforos para sincronización
-    private Semaphore queueSemaphore;    // Protege la cola (mutex)
-    private Semaphore workerSemaphore;   // Señaliza trabajo disponible
+    private Semaphore queueSemaphore;
+    private Semaphore workerSemaphore;
     
     // Número de workers activos
-    private final int NUM_WORKERS = 2;   // Puedes ajustar según necesidades
+    private final int NUM_WORKERS = 2;
+    
+    /**
+     * Callback para notificar interrupciones a SimulationEngine.
+     */
+    public interface InterruptCallback {
+        void onInterrupt(InterruptRequest request);
+    }
     
     /**
      * Entrada en el registro de handlers.
-     * Contiene tipo, handler y si necesita thread dedicado.
      */
     private static class HandlerEntry {
         InterruptType type;
@@ -66,7 +74,7 @@ public class InterruptHandler {
     }
     
     /**
-     * Thread trabajador que procesa interrupciones de la cola.
+     * Thread trabajador que procesa interrupciones.
      */
     private class InterruptWorker extends Thread {
         private boolean active;
@@ -84,14 +92,12 @@ public class InterruptHandler {
             
             while (active && running) {
                 try {
-                    // Esperar por trabajo disponible
+                    // Esperar por trabajo
                     workerSemaphore.acquire();
                     
-                    if (!active || !running) {
-                        break;
-                    }
+                    if (!active || !running) break;
                     
-                    // Obtener interrupción de la cola (con exclusión mutua)
+                    // Obtener interrupción de la cola
                     queueSemaphore.acquire();
                     InterruptRequest request = null;
                     if (!interruptQueue.isEmpty()) {
@@ -126,7 +132,6 @@ public class InterruptHandler {
     
     /**
      * Constructor principal.
-     * @param schedulerManager Referencia al planificador
      */
     public InterruptHandler(SchedulerManager schedulerManager) {
         this.interruptQueue = new PriorityQueue<>(new InterruptComparator());
@@ -134,10 +139,11 @@ public class InterruptHandler {
         this.workers = new LinkedList<>();
         this.schedulerManager = schedulerManager;
         this.running = true;
+        this.interruptCallback = null;
         
         // Inicializar semáforos
-        this.queueSemaphore = new Semaphore(1);   // Mutex para la cola
-        this.workerSemaphore = new Semaphore(0);  // Inicialmente sin trabajo
+        this.queueSemaphore = new Semaphore(1);
+        this.workerSemaphore = new Semaphore(0);
         
         // Configurar handlers por defecto
         setupDefaultHandlers();
@@ -145,7 +151,15 @@ public class InterruptHandler {
         // Iniciar threads trabajadores
         startWorkerThreads();
         
-        System.out.println("InterruptHandler iniciado con " + NUM_WORKERS + " workers.");
+        System.out.println("✅ InterruptHandler iniciado con " + NUM_WORKERS + " workers.");
+    }
+    
+    /**
+     * Registra un callback para notificar interrupciones.
+     */
+    public void registerInterruptCallback(InterruptCallback callback) {
+        this.interruptCallback = callback;
+        System.out.println("✅ Callback de interrupciones registrado");
     }
     
     /**
@@ -160,10 +174,10 @@ public class InterruptHandler {
     }
     
     /**
-     * Configura los handlers por defecto para cada tipo de interrupción.
+     * Configura los handlers por defecto.
      */
     private void setupDefaultHandlers() {
-        // MICROMETEORITE - Máxima prioridad, necesita thread dedicado
+        // MICROMETEORITE - Máxima prioridad
         registerHandler(InterruptType.MICROMETEORITE, 
             () -> handleMicrometeorite(),
             "Emergencia: impacto de micro-meteorito", 
@@ -193,7 +207,7 @@ public class InterruptHandler {
             "Proceso no cumplió deadline",
             false);
         
-        // SYSTEM_ERROR - Máxima prioridad, necesita thread dedicado
+        // SYSTEM_ERROR - Máxima prioridad
         registerHandler(InterruptType.SYSTEM_ERROR,
             () -> handleSystemError(),
             "Error crítico del sistema",
@@ -211,9 +225,6 @@ public class InterruptHandler {
     
     /**
      * Genera una nueva interrupción.
-     * @param type Tipo de interrupción
-     * @param priority Prioridad (1-5)
-     * @param source Dispositivo fuente
      */
     public void raiseInterrupt(InterruptType type, int priority, String source) {
         if (!running) {
@@ -224,20 +235,24 @@ public class InterruptHandler {
         InterruptRequest request = new InterruptRequest(type, priority, source);
         
         try {
-            // Agregar a la cola (con exclusión mutua)
+            // Agregar a la cola
             queueSemaphore.acquire();
             interruptQueue.insert(request);
             queueSemaphore.release();
             
-            // Señalizar que hay trabajo disponible
+            // Señalizar que hay trabajo
             workerSemaphore.release();
             
-            // Log de generación
+            // Log
             logEvent("Interrupción GENERADA: " + request);
             
             // Si es de máxima prioridad, forzar procesamiento inmediato
-            if (priority >= 4) { // Prioridades 4 y 5
-                System.out.println("⚠️  Interrupción de ALTA PRIORIDAD - Procesando inmediatamente");
+            if (priority >= 4) {
+                System.out.println("⚠️  Interrupción de ALTA PRIORIDAD - Notificando inmediatamente");
+                // Notificar directamente al callback si está registrado
+                if (interruptCallback != null) {
+                    interruptCallback.onInterrupt(request);
+                }
                 workerSemaphore.release(); // Asegurar procesamiento rápido
             }
             
@@ -257,11 +272,14 @@ public class InterruptHandler {
         HandlerEntry entry = findHandlerEntry(request.getType());
         
         if (entry != null) {
+            // Notificar a SimulationEngine ANTES de ejecutar handler
+            if (interruptCallback != null && request.getPriority() >= 3) {
+                interruptCallback.onInterrupt(request);
+            }
+            
             if (entry.requiresDedicatedThread) {
-                // Crear thread dedicado para interrupciones críticas
                 createDedicatedThread(entry, request);
             } else {
-                // Ejecutar en el worker thread actual
                 executeHandler(entry.handler, request);
             }
             
@@ -278,9 +296,6 @@ public class InterruptHandler {
     private void createDedicatedThread(HandlerEntry entry, InterruptRequest request) {
         Thread dedicatedThread = new Thread(() -> {
             logEvent("Thread DEDICADO iniciado para: " + entry.type);
-            
-            // Notificar al scheduler sobre interrupción crítica
-            notifySchedulerCriticalInterrupt(request);
             
             // Ejecutar handler
             executeHandler(entry.handler, request);
@@ -331,7 +346,6 @@ public class InterruptHandler {
         System.out.println("   -> Redirigiendo potencia a sistemas críticos");
         
         if (schedulerManager != null) {
-            // Notificar al scheduler para replanificación de emergencia
             schedulerManager.handleEmergency();
         }
     }
@@ -378,14 +392,7 @@ public class InterruptHandler {
         }
     }
     
-    // ========== MÉTODOS DE NOTIFICACIÓN ==========
-    
-    private void notifySchedulerCriticalInterrupt(InterruptRequest request) {
-        if (schedulerManager != null) {
-            // Método que debes implementar en SchedulerManager
-            schedulerManager.onCriticalInterrupt(request);
-        }
-    }
+    // ========== MÉTODOS DE LOGGING ==========
     
     private void logEvent(String message) {
         String timestamp = String.format("[%tT]", System.currentTimeMillis());
@@ -394,7 +401,6 @@ public class InterruptHandler {
         
         System.out.println(logMessage);
         
-        // También podrías enviar a la GUI si está configurada
         if (schedulerManager != null) {
             schedulerManager.logEvent(logMessage);
         }
@@ -409,12 +415,10 @@ public class InterruptHandler {
         System.out.println("Deteniendo InterruptHandler...");
         running = false;
         
-        // Detener todos los workers
         for (int i = 0; i < workers.size(); i++) {
             workers.get(i).stopWorker();
         }
         
-        // Liberar todos los workers que estén esperando
         workerSemaphore.release(workers.size());
         
         System.out.println("InterruptHandler detenido.");
