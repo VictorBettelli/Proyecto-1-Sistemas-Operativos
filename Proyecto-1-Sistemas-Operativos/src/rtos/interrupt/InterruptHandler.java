@@ -513,4 +513,12 @@ public class InterruptHandler {
         }
         return copy;
     }
+        // En tu clase InterruptHandler, añade este método si no existe:
+    public int getTotalProcessedInterrupts() {
+        int total = 0;
+        for (int i = 0; i < workers.size(); i++) {
+            total += workers.get(i).getProcessedCount();
+        }
+        return total;
+    }
 }

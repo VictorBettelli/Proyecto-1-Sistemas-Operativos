@@ -8,6 +8,7 @@ import javax.swing.border.TitledBorder;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.awt.event.ActionEvent;
+import rtos.interrupt.InterruptHandler;
 import rtos.scheduler.SchedulerManager;
 import rtos.simulation.SimulationEngine;
 import rtos.model.Process;
@@ -15,14 +16,17 @@ import rtos.model.ProcessState;
 import rtos.memory.MemoryManager;
 import rtos.statistics.StatisticsTracker;
 import rtos.structures.LinkedList;
-
+import rtos.interrupt.InterruptHandler;
+/*
+*luisf
+*/
 public class MainFrame extends JFrame {
     // Managers
     private SimulationEngine simulationEngine;
     private SchedulerManager schedulerManager;
     private MemoryManager memoryManager;
     private StatisticsTracker statisticsTracker;
-    
+    private InterruptHandler interruptHandler;
     // Componentes de la GUI
     private JLabel clockLabel;
     private JLabel memoryUsageLabel;
@@ -494,11 +498,56 @@ public class MainFrame extends JFrame {
     
     private void updateStatistics() {
         if (statisticsTracker != null) {
-            // Actualizar con estadísticas reales si están disponibles
-            // Por ahora, valores de ejemplo
-            successRateLabel.setText("Success Rate: 95%");
-            throughputLabel.setText("Throughput: 2.5 processes/cycle");
-            cpuUsageLabel.setText("CPU Usage: 78%");
+            // Usar los métodos CORRECTOS de StatisticsTracker
+            double successRate = statisticsTracker.getSuccessRate();
+            double throughput = statisticsTracker.getThroughput();
+            int cpuUsage = statisticsTracker.getCPUUtilization(); // ¡IMPORTANTE: getCPUUtilization()!
+
+            successRateLabel.setText(String.format("Success Rate: %.1f%%", successRate));
+            throughputLabel.setText(String.format("Throughput: %.2f processes/cycle", throughput));
+            cpuUsageLabel.setText(String.format("CPU Usage: %d%%", cpuUsage));
+
+            // También puedes usar el reporte corto para debugging
+            System.out.println("Stats: " + statisticsTracker.generateShortReport());
+        }
+
+        // Actualizar estadísticas de interrupciones
+        if (interruptHandler != null) {
+            updateInterruptStats();
+        }
+    }
+
+    private void updateInterruptStats() {
+        // Crear estadísticas más completas de interrupciones
+        String interruptStats = String.format(
+            "Interrupts: %d pending, %d processed",
+            interruptHandler.getPendingInterruptCount(),
+            interruptHandler.getTotalProcessedInterrupts() // Necesitarías un método para esto
+        );
+
+        // Buscar la etiqueta y actualizarla
+        findAndUpdateLabel("Interrupts:", interruptStats);
+    }
+
+    private void findAndUpdateLabel(String containsText, String newText) {
+        for (Component comp : getComponents()) {
+            if (comp instanceof JPanel) {
+                findLabelInPanel((JPanel) comp, containsText, newText);
+            }
+        }
+    }
+
+    private void findLabelInPanel(JPanel panel, String containsText, String newText) {
+        for (Component comp : panel.getComponents()) {
+            if (comp instanceof JLabel) {
+                JLabel label = (JLabel) comp;
+                if (label.getText().contains(containsText)) {
+                    label.setText(newText);
+                    return;
+                }
+            } else if (comp instanceof JPanel) {
+                findLabelInPanel((JPanel) comp, containsText, newText);
+            }
         }
     }
     
