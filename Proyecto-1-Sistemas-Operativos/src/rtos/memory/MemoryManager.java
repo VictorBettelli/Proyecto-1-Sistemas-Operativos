@@ -7,61 +7,77 @@ import rtos.model.Process;
 import rtos.model.ProcessState;
 import rtos.structures.LinkedList;
 
+
+/**
+ * MemoryManager SIN usar java.util.*
+ * Usa solo LinkedList propia y estructuras creadas por ti
+ */
+
 public class MemoryManager {
-    private LinkedList<Process> processesInMemory;
-    private LinkedList<Process> suspendedProcesses;
-    private int maxProcessesInMemory;
-    private int currentProcessCount;
+    private final int maxProcessesInRAM;
+    private final LinkedList<Process> processesInRAM;
+    private final LinkedList<Process> readySuspendedQueue;
+    private final LinkedList<Process> blockedSuspendedQueue;
     
-    public MemoryManager(int maxProcesses) {
-        this.processesInMemory = new LinkedList<>();
-        this.suspendedProcesses = new LinkedList<>();
-        this.maxProcessesInMemory = maxProcesses;
-        this.currentProcessCount = 0;
+    public MemoryManager(int maxProcessesInRAM) {
+        this.maxProcessesInRAM = maxProcessesInRAM;
+        this.processesInRAM = new LinkedList<>();
+        this.readySuspendedQueue = new LinkedList<>();
+        this.blockedSuspendedQueue = new LinkedList<>();
     }
     
+    // ========== MÉTODO PRINCIPAL MEJORADO ==========
+    
     /**
-     * Intenta cargar un proceso a memoria
-     * @return true si se pudo cargar, false si hay que suspender algún proceso
+     * Agrega proceso al sistema.
+     * @param process Proceso a agregar
+     * @return true si entró a RAM, false si fue suspendido
      */
-    public boolean loadProcess(Process process) {
-        if (currentProcessCount < maxProcessesInMemory) {
-            // Hay espacio en memoria
-            processesInMemory.add(process);
-            currentProcessCount++;
-            return true;
-        } else {
-            // Memoria llena - suspender proceso menos prioritario
-            Process toSuspend = findProcessToSuspend();
-            if (toSuspend != null) {
-                suspendProcess(toSuspend);
-                processesInMemory.add(process);
-                return true;
-            }
-            return false;
+    public boolean addProcess(Process process) {
+        // Caso 1: Espacio disponible en RAM
+        if (processesInRAM.size() < maxProcessesInRAM) {
+            processesInRAM.add(process);
+            return true; // Entró a RAM
         }
+        
+        // Caso 2: RAM llena - intentar suspender proceso existente
+        Process toSuspend = findProcessToSuspend();
+        
+        if (toSuspend != null) {
+            suspendProcess(toSuspend);
+            processesInRAM.add(process);
+            return true; // Entró a RAM (suspendiendo otro)
+        }
+        
+        // Caso 3: No se pudo suspender - nuevo proceso va suspendido
+        process.setState(ProcessState.READY_SUSPENDED);
+        readySuspendedQueue.add(process);
+        return false; // Fue suspendido
     }
     
-    /**
-     * Encuentra el proceso más adecuado para suspender
-     * Prioriza: procesos no críticos, con deadlines lejanos, baja prioridad
-     */
+    // ========== LÓGICA DE SUSPENSIÓN ==========
+    
     private Process findProcessToSuspend() {
         Process candidate = null;
-        int maxDeadline = Integer.MIN_VALUE;
+        int farthestDeadline = -1;
         
-        for (int i = 0; i < processesInMemory.size(); i++) {
-            Process p = processesInMemory.get(i);
+        for (int i = 0; i < processesInRAM.size(); i++) {
+            Process p = processesInRAM.get(i);
             
-            // No suspender procesos en ejecución o críticos
-            if (p.getState() == ProcessState.RUNNING || 
-                p.getPriority() == 1) { // Prioridad 1 = crítica
+            // NO suspender procesos RUNNING o prioridad 1
+            if (p.getState() == ProcessState.RUNNING || p.getPriority() == 1) {
                 continue;
             }
             
-            // Elegir proceso con deadline más lejano (menos urgente)
-            if (p.getRemainingDeadline() > maxDeadline) {
-                maxDeadline = p.getRemainingDeadline();
+            // Verificar si está cerca de terminar (opcional, más seguro)
+            if (p.getTotalInstructions() > 0 && 
+                p.getExecutedInstructions() >= p.getTotalInstructions() * 0.9) {
+                continue;
+            }
+            
+            // Seleccionar deadline más lejano
+            if (p.getRemainingDeadline() > farthestDeadline) {
+                farthestDeadline = p.getRemainingDeadline();
                 candidate = p;
             }
         }
@@ -69,49 +85,121 @@ public class MemoryManager {
         return candidate;
     }
     
-    /**
-     * Suspende un proceso (mueve a memoria secundaria)
-     */
     private void suspendProcess(Process process) {
-        // Cambiar estado según si estaba listo o bloqueado
+        processesInRAM.remove(process);
+        
         if (process.getState() == ProcessState.READY) {
             process.setState(ProcessState.READY_SUSPENDED);
+            readySuspendedQueue.add(process);
         } else if (process.getState() == ProcessState.BLOCKED) {
             process.setState(ProcessState.BLOCKED_SUSPENDED);
+            blockedSuspendedQueue.add(process);
+        }
+    }
+    
+    // ========== LÓGICA DE ACTIVACIÓN ==========
+    
+    /**
+     * Llama este método cuando un proceso termina o se libera espacio.
+     */
+    public void tryActivateSuspendedProcesses() {
+        while (processesInRAM.size() < maxProcessesInRAM && 
+               !readySuspendedQueue.isEmpty()) {
+            
+            Process toActivate = getSuspendedProcessToActivate();
+            if (toActivate == null) break;
+            
+            activateProcess(toActivate);
+        }
+    }
+    
+    private Process getSuspendedProcessToActivate() {
+        if (readySuspendedQueue.isEmpty()) return null;
+        
+        Process best = null;
+        int nearestDeadline = Integer.MAX_VALUE;
+        
+        for (int i = 0; i < readySuspendedQueue.size(); i++) {
+            Process p = readySuspendedQueue.get(i);
+            if (p.getRemainingDeadline() < nearestDeadline) {
+                nearestDeadline = p.getRemainingDeadline();
+                best = p;
+            }
         }
         
-        // Mover a cola de suspendidos
-        processesInMemory.remove(process); // Necesitas implementar remove() en LinkedList
-        suspendedProcesses.add(process);
-        currentProcessCount--;
+        return best;
+    }
+    
+    private void activateProcess(Process process) {
+        if (readySuspendedQueue.remove(process)) {
+            process.setState(ProcessState.READY);
+            processesInRAM.add(process);
+        } else if (blockedSuspendedQueue.remove(process)) {
+            process.setState(ProcessState.BLOCKED);
+            processesInRAM.add(process);
+        }
+    }
+    
+    // ========== MÉTODOS PARA SIMULATIONENGINE ==========
+    
+    /**
+     * Remueve proceso terminado y activa suspendidos si hay espacio.
+     */
+    public void processTerminated(Process process) {
+        if (processesInRAM.remove(process)) {
+            tryActivateSuspendedProcesses();
+        } else {
+            readySuspendedQueue.remove(process);
+            blockedSuspendedQueue.remove(process);
+        }
     }
     
     /**
-     * Reactiva un proceso suspendido
+     * Proceso completó E/S y está listo.
      */
-    public boolean activateProcess(Process process) {
-        if (currentProcessCount < maxProcessesInMemory && 
-            suspendedProcesses.contains(process)) {
-            
-            suspendedProcesses.remove(process);
-            processesInMemory.add(process);
-            currentProcessCount++;
-            
-            // Restaurar estado original
-            if (process.getState() == ProcessState.READY_SUSPENDED) {
-                process.setState(ProcessState.READY);
-            } else if (process.getState() == ProcessState.BLOCKED_SUSPENDED) {
-                process.setState(ProcessState.BLOCKED);
-            }
-            
-            return true;
+    public void processIOCompleted(Process process) {
+        // Si estaba bloqueado-suspendido, cambiar a ready-suspendido
+        if (blockedSuspendedQueue.remove(process)) {
+            process.setState(ProcessState.READY_SUSPENDED);
+            readySuspendedQueue.add(process);
         }
-        return false;
     }
     
-    // Getters
-    public LinkedList<Process> getProcessesInMemory() { return processesInMemory; }
-    public LinkedList<Process> getSuspendedProcesses() { return suspendedProcesses; }
-    public int getCurrentProcessCount() { return currentProcessCount; }
-    public int getMaxProcessesInMemory() { return maxProcessesInMemory; }
+    // ========== GETTERS ==========
+    
+    public boolean hasSpaceInRAM() {
+        return processesInRAM.size() < maxProcessesInRAM;
+    }
+    
+    public int getAvailableSpaceInRAM() {
+        return maxProcessesInRAM - processesInRAM.size();
+    }
+    
+    public int getRAMUsage() {
+        return processesInRAM.size();
+    }
+    
+    public int getMaxRAMCapacity() {
+        return maxProcessesInRAM;
+    }
+    
+    public int getReadySuspendedCount() {
+        return readySuspendedQueue.size();
+    }
+    
+    public int getBlockedSuspendedCount() {
+        return blockedSuspendedQueue.size();
+    }
+    
+    public LinkedList<Process> getProcessesInRAM() {
+        return processesInRAM;
+    }
+    
+    public LinkedList<Process> getReadySuspendedQueue() {
+        return readySuspendedQueue;
+    }
+    
+    public LinkedList<Process> getBlockedSuspendedQueue() {
+        return blockedSuspendedQueue;
+    }
 }
