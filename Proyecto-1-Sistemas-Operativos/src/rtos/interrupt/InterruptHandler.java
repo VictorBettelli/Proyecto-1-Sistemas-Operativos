@@ -18,8 +18,9 @@ import rtos.utils.Semaphore;
  * Implementa el patrón Worker Thread para procesar interrupciones asíncronamente.
  * Cumple con los requerimientos del proyecto: uso de Threads y Semáforos.
  */
+
 public class InterruptHandler {
-    private PriorityQueue<InterruptRequest> interruptQueue;
+private PriorityQueue<InterruptRequest> interruptQueue;
     
     // Lista de handlers registrados
     private LinkedList<HandlerEntry> handlerRegistry;
