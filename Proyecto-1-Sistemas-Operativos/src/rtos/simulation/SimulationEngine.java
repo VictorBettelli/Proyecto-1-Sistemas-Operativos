@@ -115,9 +115,6 @@ public class SimulationEngine {
             System.out.println("❌ Error inicializando procesos: " + e.getMessage());
         }
     }
-    
-    // ========== CICLO DE COORDINACIÓN CON SEMÁFOROS ==========
-    
     /**
      * Ejecuta UN ciclo de coordinación.
      * CON SEMÁFOROS para protección de recursos.
@@ -166,8 +163,7 @@ public class SimulationEngine {
             Thread.currentThread().interrupt();
             System.out.println("❌ Interrupción en ciclo de simulación");
         }
-    }
-    
+    }   
     // ========== MÉTODOS DE COORDINACIÓN CON SEMÁFOROS ==========
     
     private void checkForInterrupts() {
