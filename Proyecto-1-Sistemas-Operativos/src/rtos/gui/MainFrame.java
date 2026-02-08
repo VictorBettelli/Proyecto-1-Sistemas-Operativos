@@ -9,14 +9,19 @@ import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import rtos.scheduler.SchedulerManager;
+import rtos.simulation.SimulationEngine;
 import rtos.model.Process;
 import rtos.model.ProcessState;
 import rtos.memory.MemoryManager;
+import rtos.statistics.StatisticsTracker;
+import rtos.structures.LinkedList;
 
 public class MainFrame extends JFrame {
     // Managers
+    private SimulationEngine simulationEngine;
     private SchedulerManager schedulerManager;
     private MemoryManager memoryManager;
+    private StatisticsTracker statisticsTracker;
     
     // Componentes de la GUI
     private JLabel clockLabel;
@@ -45,7 +50,6 @@ public class MainFrame extends JFrame {
     
     // Estado de simulación
     private boolean simulationRunning = false;
-    private int simulationClock = 0;
     private Timer simulationTimer;
     
     public MainFrame() {
@@ -55,8 +59,10 @@ public class MainFrame extends JFrame {
     }
     
     private void initManagers() {
-        schedulerManager = new SchedulerManager();
-        memoryManager = new MemoryManager(10); // Máximo 10 procesos en memoria
+        simulationEngine = new SimulationEngine();
+        schedulerManager = simulationEngine.getSchedulerManager();
+        memoryManager = simulationEngine.getMemoryManager();
+        statisticsTracker = simulationEngine.getStatisticsTracker();
     }
     
     private void initComponents() {
@@ -93,6 +99,7 @@ public class MainFrame extends JFrame {
         quantumSpinner = new JSpinner(new SpinnerNumberModel(4, 1, 20, 1));
         controlPanel.add(new JLabel("Quantum:"));
         controlPanel.add(quantumSpinner);
+        quantumSpinner.setVisible(false); // Solo visible para Round Robin
         
         topPanel.add(controlPanel, BorderLayout.CENTER);
         
@@ -101,6 +108,7 @@ public class MainFrame extends JFrame {
         
         startButton = new JButton("▶ Start");
         pauseButton = new JButton("⏸ Pause");
+        pauseButton.setEnabled(false);
         resetButton = new JButton("⏹ Reset");
         generateProcessesButton = new JButton("Generate 20 Processes");
         addEmergencyButton = new JButton("Add Emergency Process");
@@ -121,7 +129,7 @@ public class MainFrame extends JFrame {
         
         // Cola de Listos (Ready Queue)
         centerPanel.add(createQueuePanel("READY QUEUE (RAM)", 
-            new String[]{"ID", "Name", "Priority", "Deadline"}, 
+            new String[]{"ID", "Name", "Priority", "Deadline", "Instructions"}, 
             readyQueueTable = new JTable()));
         
         // Proceso en Ejecución (Running)
@@ -134,7 +142,7 @@ public class MainFrame extends JFrame {
             blockedQueueTable = new JTable()));
         
         // Colas de Suspendidos
-        centerPanel.add(createQueuePanel("READY-SUSPENDED", 
+        centerPanel.add(createQueuePanel("SUSPENDED QUEUES", 
             new String[]{"ID", "Name", "State", "Time Suspended"}, 
             suspendedQueueTable = new JTable()));
         
@@ -181,6 +189,9 @@ public class MainFrame extends JFrame {
         
         // ========== CONFIGURAR LISTENERS ==========
         setupEventListeners();
+        
+        // Actualizar GUI inicial
+        updateAllDisplays();
     }
     
     private JPanel createQueuePanel(String title, String[] columns, JTable table) {
@@ -227,6 +238,7 @@ public class MainFrame extends JFrame {
         model.addRow(new Object[]{"PC/MAR", "0/0"});
         model.addRow(new Object[]{"Deadline", "∞"});
         model.addRow(new Object[]{"Instructions", "0/0"});
+        model.addRow(new Object[]{"Priority", "-"});
         
         panel.add(new JScrollPane(table), BorderLayout.CENTER);
         
@@ -258,15 +270,13 @@ public class MainFrame extends JFrame {
         
         panel.add(contentPanel, BorderLayout.CENTER);
         
-        // Swap In/Out indicators
+        // Información de swap
         JPanel swapPanel = new JPanel(new GridLayout(2, 1, 5, 5));
         
-        JLabel swapOutLabel = new JLabel("Swap Out: (Memory Full)", SwingConstants.CENTER);
-        swapOutLabel.setForeground(Color.RED);
+        JLabel swapOutLabel = new JLabel("Swap Out: 0 processes", SwingConstants.CENTER);
         swapOutLabel.setFont(new Font("Arial", Font.ITALIC, 12));
         
-        JLabel swapInLabel = new JLabel("Swap In: (Memory Available)", SwingConstants.CENTER);
-        swapInLabel.setForeground(Color.GREEN);
+        JLabel swapInLabel = new JLabel("Swap In: 0 processes", SwingConstants.CENTER);
         swapInLabel.setFont(new Font("Arial", Font.ITALIC, 12));
         
         swapPanel.add(swapOutLabel);
@@ -281,22 +291,25 @@ public class MainFrame extends JFrame {
         JPanel panel = new JPanel(new BorderLayout());
         panel.setBorder(BorderFactory.createTitledBorder("Mission Statistics"));
         
-        JPanel statsPanel = new JPanel(new GridLayout(4, 1, 5, 5));
+        JPanel statsPanel = new JPanel(new GridLayout(5, 1, 5, 5));
         
         successRateLabel = createStatLabel("Success Rate: 100%", Color.GREEN);
         throughputLabel = createStatLabel("Throughput: 0 processes/cycle", Color.BLUE);
         cpuUsageLabel = createStatLabel("CPU Usage: 0%", Color.ORANGE);
         JLabel deadlineMissLabel = createStatLabel("Deadline Misses: 0", Color.RED);
+        JLabel processCountLabel = createStatLabel("Total Processes: 0", Color.BLACK);
         
         statsPanel.add(successRateLabel);
         statsPanel.add(throughputLabel);
         statsPanel.add(cpuUsageLabel);
         statsPanel.add(deadlineMissLabel);
+        statsPanel.add(processCountLabel);
         
         panel.add(statsPanel, BorderLayout.CENTER);
         
         // Botón para mostrar gráficas
         JButton showChartsButton = new JButton("Show Performance Charts");
+        showChartsButton.addActionListener(e -> showPerformanceCharts());
         panel.add(showChartsButton, BorderLayout.SOUTH);
         
         return panel;
@@ -320,19 +333,19 @@ public class MainFrame extends JFrame {
     
     private void setupSimulationTimer() {
         simulationTimer = new Timer(1000, (ActionEvent e) -> { // 1 segundo por ciclo
-            if (simulationRunning) {
-                simulationClock++;
-                updateSimulation();
+            if (simulationRunning && simulationEngine != null) {
+                simulationEngine.executeOneCycle();
+                updateAllDisplays();
             }
         });
     }
     
-    private void updateSimulation() {
-        // Actualizar reloj
-        clockLabel.setText("MISSION CLOCK: Cycle " + simulationClock);
+    private void updateAllDisplays() {
+        if (simulationEngine == null) return;
         
-        // Ejecutar ciclo de planificación
-        // schedulerManager.schedule();
+        // Actualizar reloj
+        int currentCycle = simulationEngine.getCurrentCycle();
+        clockLabel.setText("MISSION CLOCK: Cycle " + currentCycle);
         
         // Actualizar todas las tablas
         updateReadyQueueTable();
@@ -343,79 +356,160 @@ public class MainFrame extends JFrame {
         updateStatistics();
         
         // Agregar entrada al log
-        logEvent("Cycle " + simulationClock + " completed");
+        logEvent("Cycle " + currentCycle + " completed");
     }
     
     private void updateReadyQueueTable() {
         DefaultTableModel model = (DefaultTableModel) readyQueueTable.getModel();
         model.setRowCount(0);
         
-        // Aquí obtendrías los procesos de la cola de listos
-        // Ejemplo:
-        // for (Process p : schedulerManager.getReadyQueue()) {
-        //     model.addRow(new Object[]{
-        //         p.getId(),
-        //         p.getName(),
-        //         p.getPriority(),
-        //         p.getRemainingDeadline()
-        //     });
-        // }
-        
-        // Datos de ejemplo
-        model.addRow(new Object[]{"C002", "P_Data_Downlink", 2, 45});
-        model.addRow(new Object[]{"P003", "P_Telemetry", 3, 60});
+        if (simulationEngine != null) {
+            LinkedList<Process> readyQueue = simulationEngine.getReadyQueue();
+            if (readyQueue != null) {
+                for (int i = 0; i < readyQueue.size(); i++) {
+                    Process p = readyQueue.get(i);
+                    if (p != null) {
+                        model.addRow(new Object[]{
+                            p.getId(),
+                            p.getName(),
+                            p.getPriority(),
+                            p.getRemainingDeadline(),
+                            p.getExecutedInstructions() + "/" + p.getTotalInstructions()
+                        });
+                    }
+                }
+            }
+        }
     }
     
     private void updateRunningProcessTable() {
         DefaultTableModel model = (DefaultTableModel) runningProcessTable.getModel();
         
-        // Aquí obtendrías el proceso actual
-        // Process current = schedulerManager.getCurrentProcess();
-        
-        // Datos de ejemplo
-        model.setValueAt("S001", 0, 1);
-        model.setValueAt("P_Sensor_Altitude", 1, 1);
-        model.setValueAt("RUNNING", 2, 1);
-        model.setValueAt("150/200", 3, 1);
-        model.setValueAt("45 cycles", 4, 1);
-        model.setValueAt("150/200", 5, 1);
+        if (simulationEngine != null) {
+            Process current = simulationEngine.getCurrentProcess();
+            
+            if (current != null) {
+                model.setValueAt(current.getId(), 0, 1);
+                model.setValueAt(current.getName(), 1, 1);
+                model.setValueAt(current.getState().toString(), 2, 1);
+                model.setValueAt(current.getExecutedInstructions() + "/" + 
+                               current.getTotalInstructions(), 3, 1);
+                model.setValueAt(current.getRemainingDeadline() + " cycles", 4, 1);
+                model.setValueAt(current.getExecutedInstructions() + "/" + 
+                               current.getTotalInstructions(), 5, 1);
+                model.setValueAt(current.getPriority(), 6, 1);
+            } else {
+                // CPU idle
+                model.setValueAt("None", 0, 1);
+                model.setValueAt("Idle", 1, 1);
+                model.setValueAt("IDLE", 2, 1);
+                model.setValueAt("0/0", 3, 1);
+                model.setValueAt("∞", 4, 1);
+                model.setValueAt("0/0", 5, 1);
+                model.setValueAt("-", 6, 1);
+            }
+        }
     }
     
     private void updateBlockedQueueTable() {
         DefaultTableModel model = (DefaultTableModel) blockedQueueTable.getModel();
         model.setRowCount(0);
         
-        // Datos de ejemplo
-        model.addRow(new Object[]{"1001", "P_Camera_Capture", "Sensor I/O", "3 cycles"});
+        if (simulationEngine != null) {
+            LinkedList<Process> blockedQueue = simulationEngine.getBlockedQueue();
+            if (blockedQueue != null) {
+                for (int i = 0; i < blockedQueue.size(); i++) {
+                    Process p = blockedQueue.get(i);
+                    if (p != null) {
+                        String ioType = p.isRequiresIO() ? "I/O Active" : "Blocked";
+                        String remaining = p.getRemainingDeadline() + " cycles";
+                        model.addRow(new Object[]{
+                            p.getId(),
+                            p.getName(),
+                            ioType,
+                            remaining
+                        });
+                    }
+                }
+            }
+        }
     }
     
     private void updateSuspendedQueueTable() {
         DefaultTableModel model = (DefaultTableModel) suspendedQueueTable.getModel();
         model.setRowCount(0);
         
-        // Datos de ejemplo
-        model.addRow(new Object[]{"C005", "P_Scientific_Analysis", "READY_SUSPENDED", "10 cycles"});
-        model.addRow(new Object[]{"C004", "P_Scientific_Analysis", "READY_SUSPENDED", "15 cycles"});
+        if (memoryManager != null) {
+            // Ready suspended
+            LinkedList<Process> readySuspended = memoryManager.getReadySuspendedQueue();
+            if (readySuspended != null) {
+                for (int i = 0; i < readySuspended.size(); i++) {
+                    Process p = readySuspended.get(i);
+                    if (p != null) {
+                        model.addRow(new Object[]{
+                            p.getId(),
+                            p.getName(),
+                            "READY_SUSPENDED",
+                            (simulationEngine.getCurrentCycle() - p.getCreationTime()) + " cycles"
+                        });
+                    }
+                }
+            }
+            
+            // Blocked suspended
+            LinkedList<Process> blockedSuspended = memoryManager.getBlockedSuspendedQueue();
+            if (blockedSuspended != null) {
+                for (int i = 0; i < blockedSuspended.size(); i++) {
+                    Process p = blockedSuspended.get(i);
+                    if (p != null) {
+                        model.addRow(new Object[]{
+                            p.getId(),
+                            p.getName(),
+                            "BLOCKED_SUSPENDED", 
+                            (simulationEngine.getCurrentCycle() - p.getCreationTime()) + " cycles"
+                        });
+                    }
+                }
+            }
+        }
     }
     
     private void updateMemoryUsage() {
-        int usage = memoryManager.getCurrentProcessCount() * 100 / memoryManager.getMaxProcessesInMemory();
-        memoryUsageLabel.setText(usage + "% (" + memoryManager.getCurrentProcessCount() + 
-                                "/" + memoryManager.getMaxProcessesInMemory() + " processes)");
+        if (memoryManager == null) return;
+        
+        int inRAM = memoryManager.getRAMUsage();
+        int max = memoryManager.getMaxRAMCapacity();
+        
+        if (max == 0) return;
+        int usage = (inRAM * 100) / max;
+        
+        // Actualizar barra de progreso
+        JProgressBar memoryBar = findMemoryProgressBar();
+        if (memoryBar != null) {
+            memoryBar.setValue(usage);
+        }
+        
+        memoryUsageLabel.setText(usage + "% (" + inRAM + "/" + max + " procesos)");
     }
     
     private void updateStatistics() {
-        // Actualizar estadísticas
-        successRateLabel.setText("Success Rate: 95%");
-        throughputLabel.setText("Throughput: 2.5 processes/cycle");
-        cpuUsageLabel.setText("CPU Usage: 78%");
+        if (statisticsTracker != null) {
+            // Actualizar con estadísticas reales si están disponibles
+            // Por ahora, valores de ejemplo
+            successRateLabel.setText("Success Rate: 95%");
+            throughputLabel.setText("Throughput: 2.5 processes/cycle");
+            cpuUsageLabel.setText("CPU Usage: 78%");
+        }
     }
     
     private void startSimulation() {
+        if (simulationEngine == null) return;
+        
         simulationRunning = true;
         simulationTimer.start();
         startButton.setEnabled(false);
         pauseButton.setEnabled(true);
+        simulationEngine.start();
         logEvent("Simulation started");
     }
     
@@ -424,45 +518,64 @@ public class MainFrame extends JFrame {
         simulationTimer.stop();
         startButton.setEnabled(true);
         pauseButton.setEnabled(false);
+        if (simulationEngine != null) {
+            simulationEngine.pause();
+        }
         logEvent("Simulation paused");
     }
     
     private void resetSimulation() {
         simulationRunning = false;
         simulationTimer.stop();
-        simulationClock = 0;
-        clockLabel.setText("MISSION CLOCK: Cycle 0");
         
-        // Resetear managers
-        schedulerManager = new SchedulerManager();
-        memoryManager = new MemoryManager(10);
+        // Resetear SimulationEngine
+        if (simulationEngine != null) {
+            simulationEngine.stop();
+        }
         
-        // Limpiar tablas
-        clearAllTables();
-        logArea.setText("");
+        // Crear nueva instancia
+        initManagers();
         
         startButton.setEnabled(true);
         pauseButton.setEnabled(false);
+        
+        // Limpiar GUI
+        clearAllTables();
+        logArea.setText("");
+        clockLabel.setText("MISSION CLOCK: Cycle 0");
+        
+        // Actualizar displays
+        updateAllDisplays();
+        
         logEvent("Simulation reset");
     }
     
     private void generateRandomProcesses() {
-        logEvent("Generating 20 random processes...");
-        // Implementar generación de procesos aleatorios
+        if (simulationEngine != null) {
+            simulationEngine.generate20Processes();
+            logEvent("Generating 20 random processes...");
+            updateAllDisplays();
+        }
     }
     
     private void addEmergencyProcess() {
-        logEvent("EMERGENCY: Adding emergency process (Micro-meteorite impact)");
-        // Implementar proceso de emergencia
+        if (simulationEngine != null) {
+            simulationEngine.addEmergencyProcess();
+            logEvent("EMERGENCY: Adding emergency process (Micro-meteorite impact)");
+            updateAllDisplays();
+        }
     }
     
     private void changeAlgorithm() {
         String algorithm = (String) algorithmComboBox.getSelectedItem();
-        logEvent("Algorithm changed to: " + algorithm);
-        // schedulerManager.switchAlgorithm(algorithm);
         
-        // Ajustar visibilidad del quantum
-        quantumSpinner.setVisible(algorithm.equals("Round Robin"));
+        if (simulationEngine != null && algorithm != null) {
+            simulationEngine.changeAlgorithm(algorithm);
+            logEvent("Algorithm changed to: " + algorithm);
+        }
+        
+        // Mostrar quantum solo para Round Robin
+        quantumSpinner.setVisible(algorithm != null && algorithm.equals("Round Robin"));
     }
     
     private void clearAllTables() {
@@ -478,15 +591,46 @@ public class MainFrame extends JFrame {
         runningModel.setValueAt("0/0", 3, 1);
         runningModel.setValueAt("∞", 4, 1);
         runningModel.setValueAt("0/0", 5, 1);
+        runningModel.setValueAt("-", 6, 1);
     }
     
     private void logEvent(String message) {
-        logArea.append("[" + simulationClock + "] " + message + "\n");
+        int currentCycle = simulationEngine != null ? simulationEngine.getCurrentCycle() : 0;
+        logArea.append("[" + currentCycle + "] " + message + "\n");
         logArea.setCaretPosition(logArea.getDocument().getLength());
+    }
+    
+    private void showPerformanceCharts() {
+        JOptionPane.showMessageDialog(this,
+            "Performance charts feature will be implemented with JFreeChart\n" +
+            "Showing: CPU Utilization, Deadline Success Rate, Throughput",
+            "Performance Charts",
+            JOptionPane.INFORMATION_MESSAGE);
+    }
+    
+    private JProgressBar findMemoryProgressBar() {
+        // Buscar la barra de progreso en el panel de memoria
+        for (Component comp : getComponents()) {
+            if (comp instanceof JPanel) {
+                JPanel panel = (JPanel) comp;
+                for (Component subComp : panel.getComponents()) {
+                    if (subComp instanceof JProgressBar) {
+                        return (JProgressBar) subComp;
+                    }
+                }
+            }
+        }
+        return null;
     }
     
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
+            try {
+                UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            
             MainFrame frame = new MainFrame();
             frame.setVisible(true);
         });
