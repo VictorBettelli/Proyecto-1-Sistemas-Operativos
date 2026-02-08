@@ -18,6 +18,7 @@ public class LinkedList<T> {
         tail = null;
         size = 0;
     }
+    
     /**
      * Agrega un elemento al final de la lista
      */
@@ -32,6 +33,7 @@ public class LinkedList<T> {
         }
         size++;
     }
+    
     /**
      * Agrega un elemento al inicio de la lista
      */
@@ -46,6 +48,7 @@ public class LinkedList<T> {
         }
         size++;
     }
+    
     /**
      * Inserta un elemento en una posición específica
      */
@@ -68,6 +71,7 @@ public class LinkedList<T> {
             size++;
         }
     }
+    
     /**
      * Obtiene un elemento por índice
      */
@@ -83,6 +87,10 @@ public class LinkedList<T> {
         return current.getData();
     }
     
+    /**
+     * Remueve un elemento por índice
+     * @return El elemento removido
+     */
     public T remove(int index) {
         if (index < 0 || index >= size) {
             throw new IndexOutOfBoundsException("Índice: " + index + ", Tamaño: " + size);
@@ -114,30 +122,44 @@ public class LinkedList<T> {
         return removedData;
     }
     
+    /**
+     * Remueve la primera ocurrencia de un elemento específico
+     * @param data El elemento a remover
+     * @return true si se removió, false si no se encontró
+     */
     public boolean remove(T data) {
         if (isEmpty()) return false;
         
+        // Caso 1: Es el primer elemento
         if (head.getData().equals(data)) {
             head = head.getNext();
-            if (head == null) tail = null;
+            if (head == null) {
+                tail = null;
+            }
             size--;
             return true;
         }
         
+        // Caso 2: Buscar en medio/final
         Node<T> current = head;
         while (current.getNext() != null && !current.getNext().getData().equals(data)) {
             current = current.getNext();
         }
         
+        // Caso 3: Encontrarlo
         if (current.getNext() != null) {
             current.setNext(current.getNext().getNext());
-            if (current.getNext() == null) tail = current;
+            if (current.getNext() == null) {
+                tail = current;
+            }
             size--;
             return true;
         }
         
+        // Caso 4: No encontrado
         return false;
     }
+    
     /**
      * Verifica si la lista contiene un elemento
      */
@@ -151,6 +173,7 @@ public class LinkedList<T> {
         }
         return false;
     }
+    
     /**
      * Busca el índice de un elemento
      */
@@ -181,6 +204,7 @@ public class LinkedList<T> {
         size = 0;
     }
     
+    // Métodos de acceso para uso interno
     Node<T> getHead() {
         return head;
     }
