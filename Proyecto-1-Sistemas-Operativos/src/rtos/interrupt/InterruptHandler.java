@@ -20,8 +20,7 @@ import rtos.utils.Semaphore;
  */
 
 public class InterruptHandler {
-    // Cola de interrupciones pendientes
-    private PriorityQueue<InterruptRequest> interruptQueue;
+private PriorityQueue<InterruptRequest> interruptQueue;
     
     // Lista de handlers registrados
     private LinkedList<HandlerEntry> handlerRegistry;
