@@ -29,8 +29,10 @@ public class Clock {
      * Avanza un ciclo de reloj.
      * Según PDF: "PC y MAR incrementarán una unidad por cada ciclo del reloj"
      */
-    public void tick() {
+    // Versión que devuelve el ciclo actual
+    public int tick() {
         currentCycle++;
+        return currentCycle;
     }
     
     /**

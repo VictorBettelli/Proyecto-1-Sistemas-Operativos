@@ -15,6 +15,7 @@ import rtos.structures.LinkedList;
 import rtos.interrupt.InterruptType;
 import rtos.interrupt.InterruptRequest;
 import rtos.interrupt.InterruptHandler;
+import rtos.statistics.StatisticsTracker;
 import rtos.utils.Semaphore;
 
 public class SchedulerManager {
@@ -24,6 +25,8 @@ public class SchedulerManager {
     private SRTScheduler srtScheduler;
     private PriorityScheduler priorityScheduler;
     private EDFScheduler edfScheduler;
+    private StatisticsTracker statistics;
+    private Semaphore schedulerSemaphore;
     
     // Para manejo de logs
     private LinkedList<String> eventLogs;
@@ -35,7 +38,7 @@ public class SchedulerManager {
     private Semaphore currentProcessSemaphore;  // Para proceso actual en ejecución
     private Semaphore logSemaphore;             // Para logs (escritura concurrente)
     private Semaphore interruptSemaphore;       // Para manejo de interrupciones
-    
+    private Algorithm algorithm;
     // ========== COLAS DE ESTADO ==========
     private LinkedList<Process> blockedQueue;
     private LinkedList<Process> suspendedQueue;
@@ -55,7 +58,7 @@ public class SchedulerManager {
         FCFS, ROUND_ROBIN, SRT, PRIORITY, EDF
     }
     
-    public SchedulerManager() {
+    public SchedulerManager(StatisticsTracker statistics) {
         // Crear todos los schedulers
         this.fcfsScheduler = new FCFSScheduler();
         this.rrScheduler = new RoundRobinScheduler(4); // Quantum por defecto: 4
@@ -76,6 +79,8 @@ public class SchedulerManager {
         this.currentProcessSemaphore = new Semaphore(1); // Mutex para proceso actual
         this.logSemaphore = new Semaphore(1);            // Mutex para logs
         this.interruptSemaphore = new Semaphore(1);      // Mutex para interrupciones
+        this.statistics = statistics;
+        this.schedulerSemaphore = new Semaphore(1);
         
         // ========== INICIALIZAR COLAS ==========
         this.blockedQueue = new LinkedList<>();
@@ -94,7 +99,13 @@ public class SchedulerManager {
         
         addLogEntry("SchedulerManager inicializado con semáforos de sincronización");
     }
-    
+        /**
+     * Constructor por defecto (para compatibilidad)
+     */
+    public SchedulerManager() {
+        this(new StatisticsTracker()); // Llama al otro constructor
+    }
+
     // ========== MÉTODOS SINCRONIZADOS CON SEMÁFOROS ==========
     
     /**
@@ -114,7 +125,23 @@ public class SchedulerManager {
             addLogEntry("ERROR: Interrupción al añadir proceso " + process.getId());
         }
     }
-    
+        // Dentro de SchedulerManager.java
+    public boolean shouldPreempt(Process current) {
+        if (current == null) return false;
+
+        // Obtener el siguiente proceso que está esperando en el scheduler actual
+        // Usamos .peek() porque getReadyQueue() devuelve un objeto de tu clase Queue
+        Process next = this.currentScheduler.getReadyQueue().peek(); 
+
+        if (next != null) {
+            // Regla de prioridad: 1 es la más alta, 5 la más baja.
+            // Si el que espera (next) tiene un número menor, es más prioritario.
+            if (next.getPriority() < current.getPriority()) {
+                return true; // ¡Sí! El proceso actual debe ser expulsado
+            }
+        }
+        return false;
+    }
     /**
      * Obtiene el próximo proceso a ejecutar de manera segura
      */

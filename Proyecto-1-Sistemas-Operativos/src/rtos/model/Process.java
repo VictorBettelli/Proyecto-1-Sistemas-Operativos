@@ -35,7 +35,8 @@ public class Process {
     private int ioStartCycle;       // Ciclo en que inicia la E/S
     private int ioDuration;         // Duración de la E/S
     private int ioCompletionTime;   // Ciclo en que termina la E/S
-    
+    private int blockedTime;        // Ciclo en que se bloqueó
+       
     // Registros del PCB
     private int programCounter;
     private int memoryAddressRegister;
@@ -78,6 +79,7 @@ public class Process {
         this.ioStartCycle = 0;
         this.ioDuration = 0;
         this.ioCompletionTime = 0;
+        this.blockedTime = -1;      // -1 significa no bloqueado
         
         // Inicialización de registros
         this.programCounter = 0;
@@ -115,28 +117,49 @@ public class Process {
     }
     
     // ========== MÉTODOS DE EJECUCIÓN ==========
+        /**
+     * Establece el ciclo en que el proceso se bloqueó
+     */
+    public void setBlockedTime(int cycle) {
+        this.blockedTime = cycle;
+    }
     
+    /**
+     * Obtiene el ciclo en que el proceso se bloqueó
+     */
+    public int getBlockedTime() {
+        return blockedTime;
+    }
+    
+    /**
+     * Limpia el estado de bloqueo (cuando la E/S termina)
+     */
+    public void clearBlocked() {
+        this.blockedTime = -1;
+    }
+
     /**
      * Ejecuta una instrucción del proceso
      * @return true si el proceso ha terminado, false si aún quedan instrucciones
      */
     public boolean executeInstruction() {
-        if (executedInstructions < totalInstructions) {
-            executedInstructions++;
-            programCounter++;
-            memoryAddressRegister++;
-            
-            // Verificar si en este ciclo debe iniciar E/S
-            if (requiresIO && executedInstructions == ioStartCycle) {
-                state = ProcessState.BLOCKED;
-            }
-            
-            // Verificar si terminó
-            if (executedInstructions >= totalInstructions) {
-                state = ProcessState.TERMINATED;
-                return true;
-            }
+        if (executedInstructions >= totalInstructions) {
+            return false; // Ya terminó
         }
+
+        // ¡AVANZAR UNA INSTRUCCIÓN!
+        executedInstructions++;
+        programCounter++;
+        memoryAddressRegister++;
+
+        System.out.println("      📝 " + id + " PC: " + programCounter + 
+                          " (" + executedInstructions + "/" + totalInstructions + ")");
+
+        // Verificar si terminó
+        if (executedInstructions >= totalInstructions) {
+            return true;
+        }
+
         return false;
     }
     
@@ -230,74 +253,74 @@ public class Process {
     // ========== GETTERS Y SETTERS ==========
     
     public String getId() { return id; }
-public void setId(String id) { this.id = id; }
+    public void setId(String id) { this.id = id; }
 
-public String getName() { return name; }
-public void setName(String name) { this.name = name; }
+    public String getName() { return name; }
+    public void setName(String name) { this.name = name; }
 
-public ProcessType getType() { return type; }
-public void setType(ProcessType type) { this.type = type; }
+    public ProcessType getType() { return type; }
+    public void setType(ProcessType type) { this.type = type; }
 
-public ProcessState getState() { return state; }
-public void setState(ProcessState state) { this.state = state; }
+    public ProcessState getState() { return state; }
+    public void setState(ProcessState state) { this.state = state; }
 
-public int getTotalInstructions() { return totalInstructions; }
-public void setTotalInstructions(int totalInstructions) { this.totalInstructions = totalInstructions; }
+    public int getTotalInstructions() { return totalInstructions; }
+    public void setTotalInstructions(int totalInstructions) { this.totalInstructions = totalInstructions; }
 
-public int getExecutedInstructions() { return executedInstructions; }
-public void setExecutedInstructions(int executedInstructions) { this.executedInstructions = executedInstructions; }
+    public int getExecutedInstructions() { return executedInstructions; }
+    public void setExecutedInstructions(int executedInstructions) { this.executedInstructions = executedInstructions; }
 
-public int getPriority() { return priority; }
-public void setPriority(int priority) { this.priority = priority; }
+    public int getPriority() { return priority; }
+    public void setPriority(int priority) { this.priority = priority; }
 
-public int getDeadline() { return deadline; }
-public void setDeadline(int deadline) { this.deadline = deadline; }
+    public int getDeadline() { return deadline; }
+    public void setDeadline(int deadline) { this.deadline = deadline; }
 
-public int getRemainingDeadline() { return remainingDeadline; }
-public void setRemainingDeadline(int remainingDeadline) { this.remainingDeadline = remainingDeadline; }
+    public int getRemainingDeadline() { return remainingDeadline; }
+    public void setRemainingDeadline(int remainingDeadline) { this.remainingDeadline = remainingDeadline; }
 
-public int getPeriod() { return period; }
-public void setPeriod(int period) { this.period = period; }
+    public int getPeriod() { return period; }
+    public void setPeriod(int period) { this.period = period; }
 
-public int getRemainingPeriod() { return remainingPeriod; }
-public void setRemainingPeriod(int remainingPeriod) { this.remainingPeriod = remainingPeriod; }
+    public int getRemainingPeriod() { return remainingPeriod; }
+    public void setRemainingPeriod(int remainingPeriod) { this.remainingPeriod = remainingPeriod; }
 
-public boolean isRequiresIO() { return requiresIO; }
-public void setRequiresIO(boolean requiresIO) { this.requiresIO = requiresIO; }
+    public boolean isRequiresIO() { return requiresIO; }
+    public void setRequiresIO(boolean requiresIO) { this.requiresIO = requiresIO; }
 
-public int getIoStartCycle() { return ioStartCycle; }
-public void setIoStartCycle(int ioStartCycle) { this.ioStartCycle = ioStartCycle; }
+    public int getIoStartCycle() { return ioStartCycle; }
+    public void setIoStartCycle(int ioStartCycle) { this.ioStartCycle = ioStartCycle; }
 
-public int getIoDuration() { return ioDuration; }
-public void setIoDuration(int ioDuration) { this.ioDuration = ioDuration; }
+    public int getIoDuration() { return ioDuration; }
+    public void setIoDuration(int ioDuration) { this.ioDuration = ioDuration; }
 
-public int getIoCompletionTime() { return ioCompletionTime; }
-public void setIoCompletionTime(int ioCompletionTime) { this.ioCompletionTime = ioCompletionTime; }
+    public int getIoCompletionTime() { return ioCompletionTime; }
+    public void setIoCompletionTime(int ioCompletionTime) { this.ioCompletionTime = ioCompletionTime; }
 
-public int getProgramCounter() { return programCounter; }
-public void setProgramCounter(int programCounter) { this.programCounter = programCounter; }
+    public int getProgramCounter() { return programCounter; }
+    public void setProgramCounter(int programCounter) { this.programCounter = programCounter; }
 
-public int getMemoryAddressRegister() { return memoryAddressRegister; }
-public void setMemoryAddressRegister(int memoryAddressRegister) { this.memoryAddressRegister = memoryAddressRegister; }
+    public int getMemoryAddressRegister() { return memoryAddressRegister; }
+    public void setMemoryAddressRegister(int memoryAddressRegister) { this.memoryAddressRegister = memoryAddressRegister; }
 
-public int getCreationTime() { return creationTime; }
-public void setCreationTime(int creationTime) { this.creationTime = creationTime; }
+    public int getCreationTime() { return creationTime; }
+    public void setCreationTime(int creationTime) { this.creationTime = creationTime; }
 
-public int getStartTime() { return startTime; }
-public void setStartTime(int startTime) { this.startTime = startTime; }
+    public int getStartTime() { return startTime; }
+    public void setStartTime(int startTime) { this.startTime = startTime; }
 
-public int getCompletionTime() { return completionTime; }
-public void setCompletionTime(int completionTime) { this.completionTime = completionTime; }
+    public int getCompletionTime() { return completionTime; }
+    public void setCompletionTime(int completionTime) { this.completionTime = completionTime; }
 
-public int getWaitingTime() { return waitingTime; }
-public void setWaitingTime(int waitingTime) { this.waitingTime = waitingTime; }
+    public int getWaitingTime() { return waitingTime; }
+    public void setWaitingTime(int waitingTime) { this.waitingTime = waitingTime; }
 
-public int getTurnaroundTime() { return turnaroundTime; }
-public void setTurnaroundTime(int turnaroundTime) { this.turnaroundTime = turnaroundTime; }
+    public int getTurnaroundTime() { return turnaroundTime; }
+    public void setTurnaroundTime(int turnaroundTime) { this.turnaroundTime = turnaroundTime; }
 
-public boolean isDeadlineMissed() { return deadlineMissed; }
-public void setDeadlineMissed(boolean deadlineMissed) { this.deadlineMissed = deadlineMissed; }
-    
+    public boolean isDeadlineMissed() { return deadlineMissed; }
+    public void setDeadlineMissed(boolean deadlineMissed) { this.deadlineMissed = deadlineMissed; }
+
     // ========== MÉTODOS DE UTILIDAD ==========
     
     /**
@@ -314,12 +337,6 @@ public void setDeadlineMissed(boolean deadlineMissed) { this.deadlineMissed = de
         return state == ProcessState.READY || state == ProcessState.READY_SUSPENDED;
     }
     
-    /**
-     * Verifica si el proceso está bloqueado por E/S
-     */
-    public boolean isBlocked() {
-        return state == ProcessState.BLOCKED || state == ProcessState.BLOCKED_SUSPENDED;
-    }
     
     /**
      * Verifica si el proceso está suspendido
