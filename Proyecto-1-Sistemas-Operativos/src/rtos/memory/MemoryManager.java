@@ -6,10 +6,11 @@ package rtos.memory;
 import rtos.model.Process;
 import rtos.model.ProcessState;
 import rtos.structures.LinkedList;
-import rtos.utils.Semaphore;
+import java.util.concurrent.Semaphore;
+
 /**
  * @luisf
- * MemoryManager con semáforos para sincronización concurrente
+ * MemoryManager con semáforos de java.util.concurrent para sincronización concurrente
  * Usa solo LinkedList propia y estructuras creadas por ti
  */
 public class MemoryManager {
@@ -30,7 +31,7 @@ public class MemoryManager {
         this.readySuspendedQueue = new LinkedList<>();
         this.blockedSuspendedQueue = new LinkedList<>();
         
-        // Inicializar semáforos
+        // Inicializar semáforos de java.util.concurrent
         this.ramSemaphore = new Semaphore(1);        // Mutex para RAM
         this.readySuspendSemaphore = new Semaphore(1); // Mutex para ready suspend
         this.blockedSuspendSemaphore = new Semaphore(1); // Mutex para blocked suspend
@@ -171,20 +172,29 @@ public class MemoryManager {
      * Intenta activar procesos suspendidos cuando hay espacio.
      */
     public void tryActivateSuspendedProcesses() {
+        boolean operationAcquired = false;
         try {
             operationSemaphore.acquire();
-            
-            while (hasSpaceInRAM() && getReadySuspendedCount() > 0) {
-                Process toActivate = getSuspendedProcessToActivate();
-                if (toActivate == null) break;
-                
-                activateProcess(toActivate);
-            }
-            
-            operationSemaphore.release();
-            
+            operationAcquired = true;
+            activateSuspendedProcessesUnderOperationLock();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        } finally {
+            if (operationAcquired) {
+                operationSemaphore.release();
+            }
+        }
+    }
+    
+    /**
+     * Activa procesos suspendidos.
+     * Debe llamarse cuando operationSemaphore ya fue adquirido.
+     */
+    private void activateSuspendedProcessesUnderOperationLock() {
+        while (hasSpaceInRAM() && getReadySuspendedCount() > 0) {
+            Process toActivate = getSuspendedProcessToActivate();
+            if (toActivate == null) break;
+            activateProcess(toActivate);
         }
     }
     
@@ -255,8 +265,10 @@ public class MemoryManager {
      * Remueve proceso terminado y activa suspendidos si hay espacio.
      */
     public void processTerminated(Process process) {
+        boolean operationAcquired = false;
         try {
             operationSemaphore.acquire();
+            operationAcquired = true;
             
             // Intentar remover de RAM
             ramSemaphore.acquire();
@@ -265,7 +277,7 @@ public class MemoryManager {
             
             if (wasInRAM) {
                 // Intentar activar suspendidos
-                tryActivateSuspendedProcesses();
+                activateSuspendedProcessesUnderOperationLock();
             } else {
                 // Remover de colas suspendidas
                 readySuspendSemaphore.acquire();
@@ -276,11 +288,12 @@ public class MemoryManager {
                 blockedSuspendedQueue.remove(process);
                 blockedSuspendSemaphore.release();
             }
-            
-            operationSemaphore.release();
-            
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        } finally {
+            if (operationAcquired) {
+                operationSemaphore.release();
+            }
         }
     }
     
