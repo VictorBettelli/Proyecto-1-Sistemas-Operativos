@@ -8,7 +8,8 @@ import rtos.structures.PriorityQueue;
 import rtos.structures.LinkedList;
 import rtos.scheduler.SchedulerManager;
 import rtos.utils.InterruptComparator;
-import rtos.utils.Semaphore;
+import java.util.concurrent.Semaphore;
+
 /**
  *
  * @author VictorB
@@ -20,7 +21,7 @@ import rtos.utils.Semaphore;
  */
 
 public class InterruptHandler {
-private PriorityQueue<InterruptRequest> interruptQueue;
+    private PriorityQueue<InterruptRequest> interruptQueue;
     
     // Lista de handlers registrados
     private LinkedList<HandlerEntry> handlerRegistry;
@@ -37,7 +38,7 @@ private PriorityQueue<InterruptRequest> interruptQueue;
     // Control de ejecución
     private volatile boolean running;
     
-    // Semaforos para sincronización
+    // Semáforos para sincronización (AHORA DE JAVA.UTIL.CONCURRENT)
     private Semaphore queueSemaphore;
     private Semaphore workerSemaphore;
     
@@ -142,7 +143,7 @@ private PriorityQueue<InterruptRequest> interruptQueue;
         this.running = true;
         this.interruptCallback = null;
         
-        // Inicializar semáforos
+        // Inicializar semáforos de java.util.concurrent
         this.queueSemaphore = new Semaphore(1);
         this.workerSemaphore = new Semaphore(0);
         
@@ -512,7 +513,7 @@ private PriorityQueue<InterruptRequest> interruptQueue;
         }
         return copy;
     }
-        // En tu clase InterruptHandler, añade este método si no existe:
+    
     public int getTotalProcessedInterrupts() {
         int total = 0;
         for (int i = 0; i < workers.size(); i++) {

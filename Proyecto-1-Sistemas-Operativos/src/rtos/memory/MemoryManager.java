@@ -6,10 +6,11 @@ package rtos.memory;
 import rtos.model.Process;
 import rtos.model.ProcessState;
 import rtos.structures.LinkedList;
-import rtos.utils.Semaphore;
+import java.util.concurrent.Semaphore;
+
 /**
  * @luisf
- * MemoryManager con semáforos para sincronización concurrente
+ * MemoryManager con semáforos de java.util.concurrent para sincronización concurrente
  * Usa solo LinkedList propia y estructuras creadas por ti
  */
 public class MemoryManager {
@@ -30,7 +31,7 @@ public class MemoryManager {
         this.readySuspendedQueue = new LinkedList<>();
         this.blockedSuspendedQueue = new LinkedList<>();
         
-        // Inicializar semáforos
+        // Inicializar semáforos de java.util.concurrent
         this.ramSemaphore = new Semaphore(1);        // Mutex para RAM
         this.readySuspendSemaphore = new Semaphore(1); // Mutex para ready suspend
         this.blockedSuspendSemaphore = new Semaphore(1); // Mutex para blocked suspend
