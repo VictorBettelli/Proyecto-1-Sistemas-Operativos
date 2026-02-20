@@ -16,7 +16,8 @@ import rtos.interrupt.InterruptType;
 import rtos.interrupt.InterruptRequest;
 import rtos.interrupt.InterruptHandler;
 import rtos.statistics.StatisticsTracker;
-import rtos.utils.Semaphore;
+import java.util.concurrent.Semaphore; // ← CAMBIO IMPORTANTE
+// import rtos.utils.Semaphore; ← ELIMINAR ESTA LÍNEA
 
 public class SchedulerManager {
     private Scheduler currentScheduler;
@@ -31,7 +32,7 @@ public class SchedulerManager {
     // Para manejo de logs
     private LinkedList<String> eventLogs;
     
-    // ========== SEMÁFOROS PARA SINCRONIZACIÓN ==========
+    // ========== SEMÁFOROS PARA SINCRONIZACIÓN (java.util.concurrent) ==========
     private Semaphore readyQueueSemaphore;      // Para cola de listos
     private Semaphore blockedQueueSemaphore;    // Para cola de bloqueados
     private Semaphore suspendedQueueSemaphore;  // Para cola de suspendidos
@@ -39,6 +40,7 @@ public class SchedulerManager {
     private Semaphore logSemaphore;             // Para logs (escritura concurrente)
     private Semaphore interruptSemaphore;       // Para manejo de interrupciones
     private Algorithm algorithm;
+    
     // ========== COLAS DE ESTADO ==========
     private LinkedList<Process> blockedQueue;
     private LinkedList<Process> suspendedQueue;
@@ -72,15 +74,16 @@ public class SchedulerManager {
         // Inicializar logs
         this.eventLogs = new LinkedList<>();
         
-        // ========== INICIALIZAR SEMÁFOROS ==========
+        // ========== INICIALIZAR SEMÁFOROS (java.util.concurrent) ==========
         this.readyQueueSemaphore = new Semaphore(1);     // Mutex para cola de listos
         this.blockedQueueSemaphore = new Semaphore(1);   // Mutex para cola de bloqueados
         this.suspendedQueueSemaphore = new Semaphore(1); // Mutex para cola de suspendidos
         this.currentProcessSemaphore = new Semaphore(1); // Mutex para proceso actual
         this.logSemaphore = new Semaphore(1);            // Mutex para logs
         this.interruptSemaphore = new Semaphore(1);      // Mutex para interrupciones
+        this.schedulerSemaphore = new Semaphore(1);      // Mutex para scheduler
+        
         this.statistics = statistics;
-        this.schedulerSemaphore = new Semaphore(1);
         
         // ========== INICIALIZAR COLAS ==========
         this.blockedQueue = new LinkedList<>();
@@ -97,9 +100,10 @@ public class SchedulerManager {
         // ========== INICIALIZAR INTERRUPT HANDLER ==========
         this.interruptHandler = new InterruptHandler(this);
         
-        addLogEntry("SchedulerManager inicializado con semáforos de sincronización");
+        addLogEntry("SchedulerManager inicializado con semáforos de java.util.concurrent");
     }
-        /**
+    
+    /**
      * Constructor por defecto (para compatibilidad)
      */
     public SchedulerManager() {
@@ -125,12 +129,14 @@ public class SchedulerManager {
             addLogEntry("ERROR: Interrupción al añadir proceso " + process.getId());
         }
     }
-        // Dentro de SchedulerManager.java
+    
+    /**
+     * Determina si el proceso actual debe ser preemptado
+     */
     public boolean shouldPreempt(Process current) {
         if (current == null) return false;
 
         // Obtener el siguiente proceso que está esperando en el scheduler actual
-        // Usamos .peek() porque getReadyQueue() devuelve un objeto de tu clase Queue
         Process next = this.currentScheduler.getReadyQueue().peek(); 
 
         if (next != null) {
@@ -142,6 +148,7 @@ public class SchedulerManager {
         }
         return false;
     }
+    
     /**
      * Obtiene el próximo proceso a ejecutar de manera segura
      */
@@ -288,8 +295,8 @@ public class SchedulerManager {
     }
     
     /**
-    * Reactiva un proceso suspendido
-    */
+     * Reactiva un proceso suspendido
+     */
     public boolean activateProcess(Process process) {
         try {
             suspendedQueueSemaphore.acquire();
@@ -323,13 +330,14 @@ public class SchedulerManager {
             return false;
         }
     }
+    
     /**
      * Obtiene el nombre del algoritmo actual
      */
-    
     public String getCurrentAlgorithmName() {
         return currentScheduler.getName();
     }
+    
     /**
      * Cambia el algoritmo de planificación de manera segura
      */
@@ -337,7 +345,7 @@ public class SchedulerManager {
         try {
             // Adquirir todos los semáforos necesarios para una transición segura
             readyQueueSemaphore.acquire();
-            currentProcessSemaphore.acquire();  // CORREGIDO
+            currentProcessSemaphore.acquire();
 
             System.out.println("Cambiando algoritmo a: " + algorithm);
             addLogEntry("Cambio de algoritmo a: " + algorithm);
@@ -363,7 +371,7 @@ public class SchedulerManager {
                     currentScheduler = priorityScheduler;
                     break;
                 case EDF:
-                    currentScheduler = edfScheduler;  // Asegúrate de tener esta línea
+                    currentScheduler = edfScheduler;
                     break;
             }
 
@@ -378,9 +386,10 @@ public class SchedulerManager {
             addLogEntry("ERROR: Interrupción durante cambio de algoritmo");
         }
     }
+    
     /**
- * Transfiere procesos entre schedulers
- */
+     * Transfiere procesos entre schedulers
+     */
     private void transferProcesses(Scheduler from, Scheduler to, Queue<Process> queue) {
         // Copiar procesos de la cola anterior
         Queue<Process> tempQueue = new Queue<>();
@@ -400,12 +409,12 @@ public class SchedulerManager {
             queue.enqueue(p);
         }
     }
+    
     // ========== NUEVOS MÉTODOS PARA INTERRUPCIONES ==========
     
     /**
      * Maneja una interrupción de emergencia (MICROMETEORITE, SYSTEM_ERROR)
      */
-    
     public void handleEmergency() {
         String message = "🚨 EMERGENCIA: Activando protocolos de seguridad";
         System.out.println(message);
@@ -416,17 +425,16 @@ public class SchedulerManager {
         // Cambiar posiblemente a EDF para manejar deadlines críticos
     }
 
-     /**
+    /**
      * Registra un evento en el log del sistema
      */
-    
     public void logEvent(String message) {
         addLogEntry(message);
     }
-     /**
+    
+    /**
      * Maneja un deadline incumplido
      */
-    
     public void handleDeadlineMissed() {
         String message = "⏰ Deadline Incumplido: Replanificando tareas";
         System.out.println(message);
@@ -442,7 +450,6 @@ public class SchedulerManager {
     /**
      * Notifica la finalización de una operación de E/S
      */
-    
     public void notifyIOCompletion() {
         String message = "✅ E/S Completada: Revisando procesos bloqueados";
         System.out.println(message);
@@ -455,7 +462,6 @@ public class SchedulerManager {
     /**
      * Maneja un error del sistema
      */
-    
     public void handleSystemError() {
         String message = "❌ Error del Sistema: Iniciando diagnóstico";
         System.out.println(message);
@@ -466,9 +472,6 @@ public class SchedulerManager {
         // - Ejecutar rutinas de recuperación
         // - Notificar a procesos de monitoreo
     }
-    
-    
-
     
     /**
      * Incrementa el reloj del sistema y actualiza estados
@@ -718,11 +721,10 @@ public class SchedulerManager {
             Thread.currentThread().interrupt();
             return new LinkedList<>();
         }
-    }
+    }   
     /**
      * Obtiene los últimos N logs
      */
-    
     public LinkedList<String> getRecentLogs(int count) {
         LinkedList<String> recent = new LinkedList<>();
         int start = Math.max(0, eventLogs.size() - count);
