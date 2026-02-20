@@ -16,8 +16,7 @@ import rtos.interrupt.InterruptType;
 import rtos.interrupt.InterruptRequest;
 import rtos.interrupt.InterruptHandler;
 import rtos.statistics.StatisticsTracker;
-import java.util.concurrent.Semaphore; // ← CAMBIO IMPORTANTE
-// import rtos.utils.Semaphore; ← ELIMINAR ESTA LÍNEA
+import java.util.concurrent.Semaphore; 
 
 public class SchedulerManager {
     private Scheduler currentScheduler;
@@ -467,10 +466,6 @@ public class SchedulerManager {
         System.out.println(message);
         addLogEntry(message);
         
-        // En una implementación real: 
-        // - Pausar procesos no críticos
-        // - Ejecutar rutinas de recuperación
-        // - Notificar a procesos de monitoreo
     }
     
     /**
@@ -499,13 +494,7 @@ public class SchedulerManager {
     private void performContextSwitch(Process oldProcess, Process newProcess) {
         if (oldProcess != null) {
             oldProcess.setState(ProcessState.READY);
-            try {
-                readyQueueSemaphore.acquire();
-                currentScheduler.addProcess(oldProcess);
-                readyQueueSemaphore.release();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
+            currentScheduler.addProcess(oldProcess);
         }
         
         if (newProcess.getStartTime() == -1) {
