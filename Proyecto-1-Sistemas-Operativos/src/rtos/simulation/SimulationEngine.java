@@ -8,7 +8,7 @@ package rtos.simulation;
 
 /**
  *
- * @author VictorB
+ * @author VictorB,luisf
  */
 import java.util.Random;
 import java.util.concurrent.Semaphore; // ← CAMBIO IMPORTANTE
@@ -25,8 +25,6 @@ import rtos.structures.Queue;
 // import rtos.utils.Semaphore; ← ELIMINAR ESTA LÍNEA
 
 /**
- * COORDINADOR PURA - Solo delega, NO tiene lógica propia
- * Conecta todos los componentes según el PDF
  * CON SEMÁFOROS de java.util.concurrent para exclusión mutua
  */
 public class SimulationEngine {
@@ -38,7 +36,7 @@ public class SimulationEngine {
     private final ProcessGenerator generator;
     private final Clock globalClock;
     
-    // ========== SEMÁFOROS para exclusión mutua (REQUERIMIENTO PDF) ==========
+    // ========== SEMÁFOROS para exclusión mutua ==========
     private final Semaphore executionSemaphore;    // Protege executeOneCycle()
     private final Semaphore processSemaphore;      // Protege currentProcess
     private final Semaphore queueSemaphore;        // Protege blockedQueue
@@ -82,7 +80,7 @@ public class SimulationEngine {
         this.blockedQueue = new LinkedList<>();
         
         // =========== GENERAR PROCESOS INICIALES CON PORCENTAJE ==========
-        int porcentajeDeseado = 30; // 30% de probabilidad de generar procesos iniciales
+        int porcentajeDeseado = 100; // 30% de probabilidad de generar procesos iniciales
         generarProcesosInicialesConPorcentaje(porcentajeDeseado);
         
         System.out.println("✅ SimulationEngine COORDINADOR listo con semáforos de java.util.concurrent");
@@ -142,7 +140,7 @@ public class SimulationEngine {
     }
     
     /**
-     * Ejecuta UN ciclo de coordinación.
+     * Ejecuta uN ciclo de coordinación.
      * CON SEMÁFOROS para protección de recursos.
      */
     public void executeOneCycle() {
@@ -428,42 +426,39 @@ public class SimulationEngine {
             }
 
             // Ejecutar instrucción
-            boolean executed = currentProcess.executeInstruction();
+            boolean finished = currentProcess.executeInstruction();
+            statistics.recordInstructionExecution(1);
 
-            if (executed) {
-                statistics.recordInstructionExecution(1);
+            int executedNow = currentProcess.getExecutedInstructions();
+            int total = currentProcess.getTotalInstructions();
 
-                int executedNow = currentProcess.getExecutedInstructions();
-                int total = currentProcess.getTotalInstructions();
+            System.out.println("⚡ " + currentProcess.getId() + 
+                              " ejecutó " + executedNow + "/" + total);
 
-                System.out.println("⚡ " + currentProcess.getId() + 
-                                  " ejecutó " + executedNow + "/" + total);
+            //  PRIMERO: Verificar si TERMINÓ
+            if (finished || executedNow >= total) {
+                System.out.println("   ✅ " + currentProcess.getId() + " COMPLETÓ TODAS LAS INSTRUCCIONES");
+                processSemaphore.release();
+                return finishCurrentProcess();
+            }
 
-                // 🥇 PRIMERO: Verificar si TERMINÓ
-                if (executedNow >= total) {
-                    System.out.println("   ✅ " + currentProcess.getId() + " COMPLETÓ TODAS LAS INSTRUCCIONES");
-                    processSemaphore.release();
-                    return finishCurrentProcess();
-                }
+            //  SEGUNDO: Verificar si debe iniciar E/S
+            if (currentProcess.isRequiresIO() &&
+                executedNow == currentProcess.getIoStartCycle()) {
+                System.out.println("   ⏳ " + currentProcess.getId() + " inicia E/S");
+                processSemaphore.release();
+                startIOForCurrentProcess();
+                return false;
+            }
 
-                // 🥈 SEGUNDO: Verificar si debe iniciar E/S
-                if (currentProcess.isRequiresIO() && 
-                    executedNow == currentProcess.getIoStartCycle()) {
-                    System.out.println("   ⏳ " + currentProcess.getId() + " inicia E/S");
-                    processSemaphore.release();
-                    startIOForCurrentProcess();
-                    return false;
-                }
-
-                // 🥉 TERCERO: Verificar preempción (solo si no terminó)
-                if (scheduler.shouldPreempt(currentProcess)) {
-                    System.out.println("   ⚠️ Preemptando " + currentProcess.getId());
-                    currentProcess.setState(ProcessState.READY);
-                    scheduler.addProcess(currentProcess);
-                    currentProcess = null;
-                    processSemaphore.release();
-                    return false;
-                }
+            //  TERCERO: Verificar preempción (solo si no terminó)
+            if (scheduler.shouldPreempt(currentProcess)) {
+                System.out.println("   ⚠️ Preemptando " + currentProcess.getId());
+                currentProcess.setState(ProcessState.READY);
+                scheduler.addProcess(currentProcess);
+                currentProcess = null;
+                processSemaphore.release();
+                return false;
             }
 
             processSemaphore.release();
@@ -571,6 +566,9 @@ public class SimulationEngine {
             // Registrar el ciclo de bloqueo
             currentProcess.setState(ProcessState.BLOCKED);
             currentProcess.setBlockedTime(globalClock.getCurrentCycle());
+            currentProcess.setIoCompletionTime(
+                globalClock.getCurrentCycle() + currentProcess.getIoDuration()
+            );
 
             // Adquirir semáforo para la cola bloqueada
             queueSemaphore.acquire();

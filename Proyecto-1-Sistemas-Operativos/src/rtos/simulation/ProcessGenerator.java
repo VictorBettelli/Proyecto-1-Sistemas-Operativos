@@ -6,7 +6,7 @@ package rtos.simulation;
 
 /**
  *
- * @author VictorB
+ * @author VictorB,luisf
  */
 
 
@@ -17,7 +17,6 @@ import rtos.model.Process;
 import rtos.model.ProcessType;
 
 /**
- * Generador de procesos aleatorios según especificaciones del PDF.
  * "Generar automáticamente un conjunto inicial de procesos con parámetros aleatorios"
  * "Botón 'Generar 20 Procesos Aleatorios'"
  */
@@ -69,7 +68,7 @@ public class ProcessGenerator {
         
         // 40% de probabilidad de requerir E/S
         if (random.nextDouble() < 0.4) {
-            int ioStart = random.nextInt(Math.max(1, totalInstructions / 2));
+            int ioStart = 1 + random.nextInt(Math.max(1, totalInstructions / 2));
             int ioDuration = 2 + random.nextInt(6); // 2-7 ciclos
             process.setIORequest(ioStart, ioDuration); // ✅ ESTE MÉTODO DEBE EXISTIR
         }
