@@ -1,0 +1,2 @@
+2026-02-08 15:38:58 - === INICIO SIMULACIÓN RTOS ===
+2026-02-08 15:38:58 - Proyecto 1 - Sistemas Operativos 2526-2

@@ -1,0 +1,6 @@
+2026-02-08 15:35:42 - === INICIO SIMULACIÓN RTOS ===
+2026-02-08 15:35:42 - Proyecto 1 - Sistemas Operativos 2526-2
+2026-02-08 15:35:42 - SYS: [0] Sistema inicializado con procesos de ejemplo
+2026-02-08 15:36:07 - SYS: [0] Simulación INICIADA
+2026-02-08 15:36:07 - Simulación iniciada
+2026-02-08 15:36:33 - IRQ: [25] Interrupción manual: ☀️ RÁFAGA SOLAR (Pri: 4)
