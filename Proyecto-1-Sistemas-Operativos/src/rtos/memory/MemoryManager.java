@@ -172,20 +172,29 @@ public class MemoryManager {
      * Intenta activar procesos suspendidos cuando hay espacio.
      */
     public void tryActivateSuspendedProcesses() {
+        boolean operationAcquired = false;
         try {
             operationSemaphore.acquire();
-            
-            while (hasSpaceInRAM() && getReadySuspendedCount() > 0) {
-                Process toActivate = getSuspendedProcessToActivate();
-                if (toActivate == null) break;
-                
-                activateProcess(toActivate);
-            }
-            
-            operationSemaphore.release();
-            
+            operationAcquired = true;
+            activateSuspendedProcessesUnderOperationLock();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        } finally {
+            if (operationAcquired) {
+                operationSemaphore.release();
+            }
+        }
+    }
+    
+    /**
+     * Activa procesos suspendidos.
+     * Debe llamarse cuando operationSemaphore ya fue adquirido.
+     */
+    private void activateSuspendedProcessesUnderOperationLock() {
+        while (hasSpaceInRAM() && getReadySuspendedCount() > 0) {
+            Process toActivate = getSuspendedProcessToActivate();
+            if (toActivate == null) break;
+            activateProcess(toActivate);
         }
     }
     
@@ -256,8 +265,10 @@ public class MemoryManager {
      * Remueve proceso terminado y activa suspendidos si hay espacio.
      */
     public void processTerminated(Process process) {
+        boolean operationAcquired = false;
         try {
             operationSemaphore.acquire();
+            operationAcquired = true;
             
             // Intentar remover de RAM
             ramSemaphore.acquire();
@@ -266,7 +277,7 @@ public class MemoryManager {
             
             if (wasInRAM) {
                 // Intentar activar suspendidos
-                tryActivateSuspendedProcesses();
+                activateSuspendedProcessesUnderOperationLock();
             } else {
                 // Remover de colas suspendidas
                 readySuspendSemaphore.acquire();
@@ -277,11 +288,12 @@ public class MemoryManager {
                 blockedSuspendedQueue.remove(process);
                 blockedSuspendSemaphore.release();
             }
-            
-            operationSemaphore.release();
-            
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        } finally {
+            if (operationAcquired) {
+                operationSemaphore.release();
+            }
         }
     }
     

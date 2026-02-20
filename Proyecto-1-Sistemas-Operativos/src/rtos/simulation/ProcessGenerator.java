@@ -69,7 +69,7 @@ public class ProcessGenerator {
         
         // 40% de probabilidad de requerir E/S
         if (random.nextDouble() < 0.4) {
-            int ioStart = random.nextInt(Math.max(1, totalInstructions / 2));
+            int ioStart = 1 + random.nextInt(Math.max(1, totalInstructions / 2));
             int ioDuration = 2 + random.nextInt(6); // 2-7 ciclos
             process.setIORequest(ioStart, ioDuration); // ✅ ESTE MÉTODO DEBE EXISTIR
         }

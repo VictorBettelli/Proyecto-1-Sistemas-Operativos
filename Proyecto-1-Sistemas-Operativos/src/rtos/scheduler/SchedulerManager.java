@@ -499,13 +499,8 @@ public class SchedulerManager {
     private void performContextSwitch(Process oldProcess, Process newProcess) {
         if (oldProcess != null) {
             oldProcess.setState(ProcessState.READY);
-            try {
-                readyQueueSemaphore.acquire();
-                currentScheduler.addProcess(oldProcess);
-                readyQueueSemaphore.release();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
+            // getNextProcess() ya posee readyQueueSemaphore; no reacquirir aquí
+            currentScheduler.addProcess(oldProcess);
         }
         
         if (newProcess.getStartTime() == -1) {
@@ -760,3 +755,4 @@ public class SchedulerManager {
         return 85.0; // Valor de ejemplo
     }
 }
+
