@@ -10,7 +10,8 @@ package rtos.simulation;
  *
  * @author VictorB
  */
-
+import java.util.Random;
+import java.util.concurrent.Semaphore; // ← CAMBIO IMPORTANTE
 import rtos.model.Process;
 import rtos.model.ProcessState;
 import rtos.model.ProcessType;
@@ -21,12 +22,12 @@ import rtos.interrupt.InterruptType;
 import rtos.statistics.StatisticsTracker;
 import rtos.structures.LinkedList;
 import rtos.structures.Queue;
-import rtos.utils.Semaphore;
+// import rtos.utils.Semaphore; ← ELIMINAR ESTA LÍNEA
 
 /**
  * COORDINADOR PURA - Solo delega, NO tiene lógica propia
  * Conecta todos los componentes según el PDF
- * CON SEMÁFOROS para exclusión mutua
+ * CON SEMÁFOROS de java.util.concurrent para exclusión mutua
  */
 public class SimulationEngine {
     // ========== TODOS LOS COMPONENTES (solo referencias) ==========
@@ -52,22 +53,23 @@ public class SimulationEngine {
     // Colas (solo referencias a las de otros componentes)
     private LinkedList<Process> blockedQueue;
     
+    // Callback para estadísticas
+    private StatsCallback statsCallback;
+    
     public SimulationEngine() {
-        // ========== OBTENER/INICIALIZAR COMPONENTES ==========
-        this.scheduler = new SchedulerManager();
-        this.interrupts = new InterruptHandler(scheduler);
-        
-        // Crear componentes nuevos pero simples
+        // =========== CREAR COMPONENTES ==========
         this.globalClock = new Clock();
         this.generator = new ProcessGenerator();
         this.statistics = new StatisticsTracker();
         this.memory = new MemoryManager(10); // 10 procesos máximo en RAM
+        this.scheduler = new SchedulerManager(statistics);
+        this.interrupts = new InterruptHandler(scheduler);
         
-        // ========== INICIALIZAR SEMÁFOROS (REQUERIMIENTO PDF) ==========
-        this.executionSemaphore = new Semaphore(1);  // Mutex para ciclo de ejecución
-        this.processSemaphore = new Semaphore(1);    // Mutex para proceso actual
-        this.queueSemaphore = new Semaphore(1);      // Mutex para colas
-        this.interruptSemaphore = new Semaphore(1);  // Mutex para interrupciones
+        // =========== INICIALIZAR SEMÁFOROS (java.util.concurrent) ==========
+        this.executionSemaphore = new Semaphore(1);  // Semáforo binario
+        this.processSemaphore = new Semaphore(1);    // Semáforo binario
+        this.queueSemaphore = new Semaphore(1);      // Semáforo binario
+        this.interruptSemaphore = new Semaphore(1);  // Semáforo binario
         
         // Configurar componentes
         setupComponentConnections();
@@ -79,9 +81,52 @@ public class SimulationEngine {
         this.cycleDurationMs = 1000;
         this.blockedQueue = new LinkedList<>();
         
-        System.out.println("✅ SimulationEngine COORDINADOR listo con semáforos");
+        // =========== GENERAR PROCESOS INICIALES CON PORCENTAJE ==========
+        int porcentajeDeseado = 30; // 30% de probabilidad de generar procesos iniciales
+        generarProcesosInicialesConPorcentaje(porcentajeDeseado);
+        
+        System.out.println("✅ SimulationEngine COORDINADOR listo con semáforos de java.util.concurrent");
         System.out.println("   Delegando a: Scheduler, MemoryManager, InterruptHandler");
         System.out.println("   Semáforos: execution, process, queue, interrupt");
+    }
+    
+    /**
+     * Genera procesos iniciales basado en un porcentaje
+     * @param porcentaje 0-100, probabilidad de que aparezcan procesos al iniciar
+     */
+    private void generarProcesosInicialesConPorcentaje(int porcentaje) {
+        try {
+            queueSemaphore.acquire();
+
+            Random rand = new Random();
+            int numeroAleatorio = rand.nextInt(100); // 0-99
+
+            System.out.println("🎲 Generando procesos iniciales con " + porcentaje + "% de probabilidad");
+            System.out.println("   Número aleatorio: " + numeroAleatorio);
+
+            if (numeroAleatorio < porcentaje) {
+                // ¡Sí! Van a aparecer procesos
+                int cantidadProcesos = 3 + rand.nextInt(5); // Entre 3 y 7 procesos
+
+                System.out.println("   ✅ ¡PROCESOS GENERADOS! Cantidad: " + cantidadProcesos);
+
+                for (int i = 0; i < cantidadProcesos; i++) {
+                    Process p = generator.generateRandomProcess();
+                    addProcessToSystem(p);
+                }
+
+                logEvent("🎲 " + cantidadProcesos + " procesos iniciales generados (probabilidad " + porcentaje + "%)");
+            } else {
+                System.out.println("   ❌ No se generaron procesos iniciales (probabilidad no cumplida)");
+                logEvent("⚠️ Sistema iniciado SIN procesos (probabilidad " + porcentaje + "% no cumplida)");
+            }
+
+            queueSemaphore.release();
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            System.out.println("❌ Error generando procesos iniciales");
+        }
     }
     
     /**
@@ -92,79 +137,104 @@ public class SimulationEngine {
         if (interrupts != null) {
             interrupts.registerInterruptCallback(this::handleIncomingInterrupt);
         }
-        
-        // Inicializar con algunos procesos
-        initializeWithSampleProcesses();
+
+        System.out.println("🔌 Componentes conectados. Sistema listo.");
     }
     
-    /**
-     * Inicializa con procesos de ejemplo.
-     */
-    private void initializeWithSampleProcesses() {
-        try {
-            queueSemaphore.acquire();
-            // Generar 5 procesos iniciales (según PDF)
-            for (int i = 0; i < 5; i++) {
-                Process p = generator.generateRandomProcess();
-                addProcessToSystem(p);
-            }
-            queueSemaphore.release();
-            logEvent("🎲 5 procesos iniciales generados");
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            System.out.println("❌ Error inicializando procesos: " + e.getMessage());
-        }
-    }
     /**
      * Ejecuta UN ciclo de coordinación.
      * CON SEMÁFOROS para protección de recursos.
      */
     public void executeOneCycle() {
         if (!isRunning || isPaused) return;
-        
+
         try {
-            // SEMÁFORO: Proteger ciclo completo de ejecución
             executionSemaphore.acquire();
-            
+
             // 1. Avanzar reloj
             globalClock.tick();
             statistics.setCurrentCycle(globalClock.getCurrentCycle());
-            
-            // 2. Verificar interrupciones (delegar a InterruptHandler)
+
+            // 2. Verificar interrupciones
             checkForInterrupts();
-            
-            // 3. Actualizar deadlines de todos los procesos
+
+            // 3. Actualizar deadlines
             updateAllProcessDeadlines();
-            
+
             // 4. Verificar deadlines incumplidos
             checkForDeadlineMisses();
-            
+
             // 5. Procesar E/S completadas
             processCompletedIO();
-            
-            // 6. Manejar memoria (delegar a MemoryManager)
+
+            // 6. Manejar memoria
             manageMemory();
-            
-            // 7. Ejecutar proceso actual (si hay)
-            executeCurrentProcess();
-            
-            // 8. Planificar próximo proceso (delegar a Scheduler)
+
+            // 7. EJECUTAR PROCESO ACTUAL
+            boolean processFinished = executeCurrentProcess();
+
+            // 8. Si terminó, liberar recursos
+            if (processFinished) {
+                freeResourcesOfTerminatedProcess();
+            }
+
+            // 9. Planificar próximo proceso
             scheduleNextProcess();
-            
-            // 9. Generar eventos aleatorios
+
+            // 10. Generar eventos aleatorios
             generateRandomEvents();
-            
-            // 10. Actualizar estadísticas (delegar a StatisticsTracker)
+
+            // 11. Actualizar estadísticas
             updateStatistics();
-            
+
             executionSemaphore.release();
-            
+
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             System.out.println("❌ Interrupción en ciclo de simulación");
         }
-    }   
+    }
+    
     // ========== MÉTODOS DE COORDINACIÓN CON SEMÁFOROS ==========
+    
+    private void activateSuspendedProcesses() {
+        if (memory == null) return;
+
+        // Si hay espacio en RAM, activar suspendidos
+        if (memory.hasSpaceInRAM()) {
+            System.out.println("🔄 Hay espacio en RAM (" + memory.getAvailableSpaceInRAM() + 
+                              ") - Activando suspendidos...");
+
+            LinkedList<Process> readySuspended = memory.getReadySuspendedQueue();
+            LinkedList<Process> toActivate = new LinkedList<>();
+
+            // Seleccionar los de mayor prioridad (menor número)
+            for (int i = 0; i < readySuspended.size(); i++) {
+                Process p = readySuspended.get(i);
+                if (toActivate.size() < memory.getAvailableSpaceInRAM()) {
+                    toActivate.add(p);
+                }
+            }
+
+            // Activar los seleccionados
+            for (int i = 0; i < toActivate.size(); i++) {
+                Process p = toActivate.get(i);
+                System.out.println("   ✅ Activando proceso suspendido: " + p.getId());
+                p.setState(ProcessState.READY);
+                scheduler.addProcess(p);
+            }
+        }
+    }
+    
+    public void forceActivateSuspended() {
+        try {
+            executionSemaphore.acquire();
+            activateSuspendedProcesses();
+            executionSemaphore.release();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
     
     private void checkForInterrupts() {
         try {
@@ -240,30 +310,51 @@ public class SimulationEngine {
     private void processCompletedIO() {
         try {
             queueSemaphore.acquire();
-            
-            // Verificar procesos bloqueados que completaron E/S
+
+            if (blockedQueue.isEmpty()) {
+                queueSemaphore.release();
+                return;
+            }
+
             LinkedList<Process> completed = new LinkedList<>();
-            
+            int currentCycle = globalClock.getCurrentCycle();
+
+            // Verificar cada proceso bloqueado
             for (int i = 0; i < blockedQueue.size(); i++) {
                 Process p = blockedQueue.get(i);
-                if (p.isIOCompleted(globalClock.getCurrentCycle())) {
-                    p.completeIO();
+
+                // Verificar si completó la E/S
+                if (p.isIOCompleted(currentCycle)) {
                     completed.add(p);
-                    logEvent("✅ E/S completada: " + p.getId());
+                    logEvent("✅ E/S completada para: " + p.getId() + 
+                            " (bloqueado por " + (currentCycle - p.getBlockedTime()) + " ciclos)");
                 }
             }
-            
-            // Mover de vuelta al sistema
+
+            // Mover los procesos completados de vuelta al sistema
             for (int i = 0; i < completed.size(); i++) {
                 Process p = completed.get(i);
+
+                // Remover de cola bloqueada
                 blockedQueue.remove(p);
-                addProcessToSystem(p); // Delegar a MemoryManager + Scheduler
+
+                // Limpiar estado de bloqueo
+                p.clearBlocked();
+
+                // Poner en estado READY
+                p.setState(ProcessState.READY);
+
+                // Devolver al scheduler
+                scheduler.addProcess(p);
+
+                logEvent("🔄 Proceso desbloqueado: " + p.getId() + " vuelve a READY");
             }
-            
+
             queueSemaphore.release();
-            
+
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            logEvent("❌ Error en processCompletedIO: " + e.getMessage());
         }
     }
     
@@ -274,55 +365,113 @@ public class SimulationEngine {
         memory.tryActivateSuspendedProcesses();
     }
     
-    private void executeCurrentProcess() {
+    /**
+     * Actualiza las estadísticas de la simulación
+     */
+    private void updateStatistics() {
+        if (statistics == null) return;
+
+        int cycle = globalClock.getCurrentCycle();
+
+        // FORZAR cálculo de estadísticas
+        double successRate = statistics.calculateSuccessRate();
+        double throughput = statistics.calculateThroughput();
+        int cpuUsage = statistics.calculateCPUUtilization();
+        int totalProcesses = statistics.getTotalProcessesCreated();
+        int completed = statistics.getTotalProcessesCompleted();
+
+        // LOG para debugging
+        System.out.println("📊 Stats - Ciclo " + cycle + 
+                          " | CPU: " + cpuUsage + 
+                          "% | Completados: " + completed +
+                          "/" + totalProcesses +
+                          " | Throughput: " + String.format("%.3f", throughput));
+
+        // Actualizar GUI si hay callback
+        if (statsCallback != null) {
+            statsCallback.onStatsUpdated(successRate, throughput, cpuUsage, totalProcesses);
+        }
+    }
+
+    // Interfaz para callback
+    public interface StatsCallback {
+        void onStatsUpdated(double successRate, double throughput, int cpuUsage, int totalProcesses);
+    }
+
+    public void setStatsCallback(StatsCallback callback) {
+        this.statsCallback = callback;
+    }
+    
+    /**
+     * Ejecuta el proceso actual
+     * @return true si el proceso terminó
+     */
+    private boolean executeCurrentProcess() {
+        if (currentProcess == null) {
+            return false;
+        }
+
         try {
             processSemaphore.acquire();
-            
-            if (currentProcess == null) {
-                statistics.recordIdleCycle();
+
+            // Verificar si el proceso está en RAM
+            if (!isProcessInRAM(currentProcess)) {
+                System.out.println("⚠️ " + currentProcess.getId() + " no está en RAM");
+                currentProcess = null;
                 processSemaphore.release();
-                return;
+                return false;
             }
-            
+
             // Marcar inicio si es primera vez
             if (currentProcess.getStartTime() < 0) {
                 currentProcess.setStartTime(globalClock.getCurrentCycle());
             }
-            
-            // Ejecutar instrucción (PC++, MAR++)
-            boolean finished = currentProcess.executeInstruction();
-            statistics.recordInstructionExecution(1);
-            
-            if (finished) {
-                // Proceso terminó - delegar limpieza
-                finishProcess(currentProcess);
-                currentProcess = null;
-                processSemaphore.release();
-                return;
-            }
-            
-            // Verificar si inicia E/S
-            if (currentProcess.isRequiresIO() && 
-                currentProcess.getExecutedInstructions() == currentProcess.getIoStartCycle()) {
-                
-                logEvent("⏳ E/S iniciada: " + currentProcess.getId());
-                currentProcess.setState(ProcessState.BLOCKED);
-                
-                try {
-                    queueSemaphore.acquire();
-                    blockedQueue.add(currentProcess);
-                    queueSemaphore.release();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
+
+            // Ejecutar instrucción
+            boolean executed = currentProcess.executeInstruction();
+
+            if (executed) {
+                statistics.recordInstructionExecution(1);
+
+                int executedNow = currentProcess.getExecutedInstructions();
+                int total = currentProcess.getTotalInstructions();
+
+                System.out.println("⚡ " + currentProcess.getId() + 
+                                  " ejecutó " + executedNow + "/" + total);
+
+                // 🥇 PRIMERO: Verificar si TERMINÓ
+                if (executedNow >= total) {
+                    System.out.println("   ✅ " + currentProcess.getId() + " COMPLETÓ TODAS LAS INSTRUCCIONES");
+                    processSemaphore.release();
+                    return finishCurrentProcess();
                 }
-                
-                currentProcess = null;
+
+                // 🥈 SEGUNDO: Verificar si debe iniciar E/S
+                if (currentProcess.isRequiresIO() && 
+                    executedNow == currentProcess.getIoStartCycle()) {
+                    System.out.println("   ⏳ " + currentProcess.getId() + " inicia E/S");
+                    processSemaphore.release();
+                    startIOForCurrentProcess();
+                    return false;
+                }
+
+                // 🥉 TERCERO: Verificar preempción (solo si no terminó)
+                if (scheduler.shouldPreempt(currentProcess)) {
+                    System.out.println("   ⚠️ Preemptando " + currentProcess.getId());
+                    currentProcess.setState(ProcessState.READY);
+                    scheduler.addProcess(currentProcess);
+                    currentProcess = null;
+                    processSemaphore.release();
+                    return false;
+                }
             }
-            
+
             processSemaphore.release();
-            
+            return false;
+
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            return false;
         }
     }
     
@@ -350,48 +499,143 @@ public class SimulationEngine {
         }
     }
     
+    /**
+     * Finaliza el proceso actual
+     */
+    private boolean finishCurrentProcess() {
+        if (currentProcess == null) return false;
+        
+        String processId = currentProcess.getId();
+        int executed = currentProcess.getExecutedInstructions();
+        int total = currentProcess.getTotalInstructions();
+        
+        System.out.println("\n🎯🎯🎯 FINALIZANDO: " + processId + 
+                          " (" + executed + "/" + total + ") 🎯🎯🎯");
+        
+        // 1. Marcar como TERMINATED
+        currentProcess.setState(ProcessState.TERMINATED);
+        currentProcess.setCompletionTime(globalClock.getCurrentCycle());
+        
+        // 2. Registrar en estadísticas
+        statistics.recordProcessCompletion(currentProcess);
+        System.out.println("   📊 Estadísticas actualizadas");
+        
+        // 3. Notificar a MemoryManager
+        if (memory != null) {
+            memory.processTerminated(currentProcess);
+            System.out.println("   ✅ MemoryManager notificado - proceso eliminado de RAM");
+            System.out.println("      RAM ahora: " + memory.getRAMUsage() + "/" + memory.getMaxRAMCapacity());
+        }
+        
+        // 4. Liberar el proceso
+        System.out.println("   🧹 Proceso " + processId + " ELIMINADO del sistema");
+        currentProcess = null;
+        
+        // 5. Intentar activar procesos suspendidos
+        activateSuspendedProcessesIfSpaceAvailable();
+        
+        return true;
+    }
+
+    /**
+     * Libera recursos del proceso terminado
+     */
+    private void freeResourcesOfTerminatedProcess() {
+        logEvent("🧹 Recursos liberados");
+    }
+
+    /**
+     * Verifica si un proceso está en RAM
+     */
+    private boolean isProcessInRAM(Process process) {
+        if (memory == null) return true;
+
+        LinkedList<Process> processesInRAM = memory.getProcessesInRAM();
+        for (int i = 0; i < processesInRAM.size(); i++) {
+            if (processesInRAM.get(i).getId().equals(process.getId())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Inicia E/S para el proceso actual
+     */
+    private void startIOForCurrentProcess() {
+        if (currentProcess == null) return;
+
+        try {
+            logEvent("⏳ E/S iniciada: " + currentProcess.getId());
+
+            // Registrar el ciclo de bloqueo
+            currentProcess.setState(ProcessState.BLOCKED);
+            currentProcess.setBlockedTime(globalClock.getCurrentCycle());
+
+            // Adquirir semáforo para la cola bloqueada
+            queueSemaphore.acquire();
+
+            // Añadir a la cola de bloqueados
+            blockedQueue.add(currentProcess);
+            logEvent("📋 Proceso bloqueado: " + currentProcess.getId() + 
+                    " | Cola blocked: " + blockedQueue.size());
+
+            queueSemaphore.release();
+
+            // El proceso actual ya no está en CPU
+            currentProcess = null;
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            logEvent("❌ Error iniciando E/S: " + e.getMessage());
+        }
+    }
+    
     private void generateRandomEvents() {
-        // 5% chance de interrupción aleatoria
+        // 5% chance de interrupción aleatoria SOLAMENTE
         if (Math.random() < 0.05 && interrupts != null) {
             interrupts.generateRandomInterrupt();
         }
+    }
+    
+    /**
+     * Activa procesos suspendidos si hay espacio en RAM
+     */
+    private void activateSuspendedProcessesIfSpaceAvailable() {
+        if (memory == null) return;
         
-        // 10% chance de proceso aperiódico
-        if (Math.random() < 0.10) {
-            Process p = generator.generateRandomProcess();
-            addProcessToSystem(p);
-            logEvent("🎲 Proceso aleatorio generado: " + p.getId());
+        if (memory.hasSpaceInRAM()) {
+            System.out.println("🔄 Espacio liberado en RAM (" + memory.getAvailableSpaceInRAM() + 
+                              ") - Activando procesos suspendidos...");
+            memory.tryActivateSuspendedProcesses();
         }
     }
     
-    private void updateStatistics() {
-        // Delegar todo a StatisticsTracker
-        // StatisticsTracker debe manejar sus propios semáforos internamente
-    }
-    
-    // ========== OPERACIONES DE PROCESOS CON SEMÁFOROS ==========
-    
-    /**
-     * Agrega proceso al sistema (coordina MemoryManager + Scheduler).
-     * CON SEMÁFOROS para exclusión mutua.
-     */
     private void addProcessToSystem(Process process) {
-        // Establecer tiempo de creación
+        // 1. Verificar límite GLOBAL del sistema
+        int totalProcesses = getTotalProcessesInSystem();
+        if (totalProcesses >= 30) {
+            logEvent("❌ SISTEMA LLENO: No se puede agregar " + process.getId());
+            return;
+        }
+
+        // 2. Establecer tiempo de creación
         process.setCreationTime(globalClock.getCurrentCycle());
-        
-        // 1. Intentar agregar a RAM (delegar a MemoryManager)
-        // MemoryManager maneja sus propios semáforos internamente
+
+        // 3. Intentar agregar a RAM
         boolean addedToRAM = memory.addProcess(process);
-        
+
         if (addedToRAM) {
-            // 2. Si entró a RAM, agregar al scheduler
-            // SchedulerManager maneja sus propios semáforos internamente
+            // 4. Si entró a RAM, agregar al scheduler
             scheduler.addProcess(process);
             statistics.recordProcessCreation(process);
-            logEvent("➕ Proceso agregado: " + process.getId());
+            logEvent("➕ Proceso agregado a RAM: " + process.getId() + 
+                    " (RAM: " + memory.getRAMUsage() + "/" + 
+                    memory.getMaxRAMCapacity() + ")");
         } else {
-            // 3. Si no entró a RAM, ya está suspendido por MemoryManager
-            logEvent("⏸️ Proceso suspendido al crear: " + process.getId());
+            // 5. Si no entró a RAM, está suspendido
+            logEvent("⏸️ Proceso suspendido: " + process.getId() + 
+                    " (Suspendidos: " + memory.getReadySuspendedCount() + ")");
         }
     }
     
@@ -405,7 +649,7 @@ public class SimulationEngine {
             process.finishProcess(globalClock.getCurrentCycle());
             process.setState(ProcessState.TERMINATED);
             
-            // Delegar limpieza a componentes (cada uno maneja sus semáforos)
+            // Delegar limpieza a componentes
             memory.processTerminated(process);
             statistics.recordProcessCompletion(process);
             
@@ -517,18 +761,88 @@ public class SimulationEngine {
         }
     }
     
+    /**
+     * Genera 20 procesos de forma CONTROLADA
+     */
     public void generate20Processes() {
-        try {
-            queueSemaphore.acquire();
-            for (int i = 0; i < 20; i++) {
+        logEvent("🎲 Iniciando generación controlada de 20 procesos...");
+
+        new Thread(() -> {
+            int created = 0;
+            int maxAttempts = 30;
+
+            while (created < 20 && isRunning) {
+                if (getTotalProcessesInSystem() >= maxAttempts) {
+                    logEvent("⚠️ Límite máximo alcanzado (" + maxAttempts + ")");
+                    break;
+                }
+
                 Process p = generator.generateRandomProcess();
                 addProcessToSystem(p);
+                created++;
+
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+
+                if (created % 5 == 0 && created < 20) {
+                    logEvent("⏳ " + created + " procesos generados...");
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
             }
-            queueSemaphore.release();
-            logEvent("🎲 20 procesos aleatorios generados");
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+
+            logEvent("✅ Generación completada: " + created + " procesos");
+            logSystemStatus();
+        }).start();
+    }
+
+    /**
+     * Cuenta el total de procesos en TODO el sistema
+     */
+    private int getTotalProcessesInSystem() {
+        int total = 0;
+
+        total += memory.getRAMUsage();
+        total += memory.getReadySuspendedCount();
+        total += memory.getBlockedSuspendedCount();
+
+        if (currentProcess != null) {
+            boolean alreadyCounted = false;
+            LinkedList<Process> inRAM = memory.getProcessesInRAM();
+
+            for (int i = 0; i < inRAM.size(); i++) {
+                if (inRAM.get(i).getId().equals(currentProcess.getId())) {
+                    alreadyCounted = true;
+                    break;
+                }
+            }
+
+            if (!alreadyCounted) {
+                total++;
+            }
         }
+
+        return total;
+    }
+    
+    private void logSystemStatus() {
+        System.out.println("\n🔍 DIAGNÓSTICO DEL SISTEMA - Ciclo " + globalClock.getCurrentCycle());
+        System.out.println("  Proceso actual: " + (currentProcess != null ? currentProcess.getId() : "ninguno"));
+        System.out.println("  RAM: " + memory.getRAMUsage() + "/" + memory.getMaxRAMCapacity());
+        System.out.println("  Ready Suspended: " + memory.getReadySuspendedCount());
+        System.out.println("  Blocked Suspended: " + memory.getBlockedSuspendedCount());
+        System.out.println("  Total en sistema: " + getTotalProcessesInSystem());
+        System.out.println("  Cola ready: " + scheduler.getReadyQueue().size());
+        System.out.println("  Cola blocked: " + blockedQueue.size());
+        System.out.println("=====================================\n");
     }
     
     public void addEmergencyProcess() {
@@ -544,7 +858,6 @@ public class SimulationEngine {
     }
     
     public void changeAlgorithm(String algorithm) {
-        // Delegar a SchedulerManager (maneja sus propios semáforos)
         try {
             rtos.scheduler.SchedulerManager.Algorithm algo = 
                 rtos.scheduler.SchedulerManager.Algorithm.valueOf(algorithm);

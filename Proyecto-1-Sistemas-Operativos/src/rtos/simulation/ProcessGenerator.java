@@ -13,6 +13,8 @@ package rtos.simulation;
 import rtos.model.Process;
 import rtos.model.ProcessType;
 import java.util.Random;
+import rtos.model.Process;
+import rtos.model.ProcessType;
 
 /**
  * Generador de procesos aleatorios según especificaciones del PDF.
@@ -20,7 +22,7 @@ import java.util.Random;
  * "Botón 'Generar 20 Procesos Aleatorios'"
  */
 public class ProcessGenerator {
-    private final Random random;
+    private final java.util.Random random;
     private int processCounter;
     
     // Nombres de procesos para satélite
@@ -37,17 +39,8 @@ public class ProcessGenerator {
         "Monitoreo de Radiación"
     };
     
-    // Tipos de E/S para procesos
-    private static final String[] IO_OPERATIONS = {
-        "Lectura Sensor",
-        "Transmisión Radio",
-        "Escritura Memoria",
-        "Calibración",
-        "Diagnóstico"
-    };
-    
     public ProcessGenerator() {
-        this.random = new Random();
+        this.random = new java.util.Random();
         this.processCounter = 1000; // P1000, P1001, etc.
     }
     
@@ -64,10 +57,10 @@ public class ProcessGenerator {
         // Tipo (30% periódico, 70% aperiódico)
         ProcessType type = random.nextDouble() < 0.3 ? ProcessType.PERIODIC : ProcessType.APERIODIC;
         
-        // Parámetros según PDF: instrucciones, prioridad, deadline, periodo
+        // Parámetros: instrucciones, prioridad, deadline, periodo
         int totalInstructions = 10 + random.nextInt(91); // 10-100 instrucciones
         int priority = 1 + random.nextInt(5); // 1-5 (1 = más alta)
-        int deadline = totalInstructions + 5 + random.nextInt(20); // Deadline justo después
+        int deadline = totalInstructions + 5 + random.nextInt(20);
         int period = type == ProcessType.PERIODIC ? 
                      Math.max(deadline + 10, totalInstructions * 2) : 0;
         
@@ -78,7 +71,7 @@ public class ProcessGenerator {
         if (random.nextDouble() < 0.4) {
             int ioStart = random.nextInt(Math.max(1, totalInstructions / 2));
             int ioDuration = 2 + random.nextInt(6); // 2-7 ciclos
-            process.setIORequest(ioStart, ioDuration);
+            process.setIORequest(ioStart, ioDuration); // ✅ ESTE MÉTODO DEBE EXISTIR
         }
         
         return process;
@@ -86,15 +79,13 @@ public class ProcessGenerator {
     
     /**
      * Genera proceso de emergencia (alta prioridad).
-     * Para botón "Añadir Proceso de Emergencia"
      */
     public Process generateEmergencyProcess() {
         String id = "EMG" + (processCounter++);
         
-        // Proceso crítico
         Process process = new Process(
             id,
-            "🚨 EMERGENCIA - Evento Crítico",
+            "🚨 EMERGENCIA - Impacto",
             ProcessType.APERIODIC,
             15,  // Pocas instrucciones
             1,   // Prioridad máxima
@@ -102,8 +93,8 @@ public class ProcessGenerator {
             0    // No periódico
         );
         
-        // Siempre tiene E/S (comunicación)
-        process.setIORequest(5, 3);
+        // Siempre tiene E/S
+        process.setIORequest(5, 3); // ✅ ESTE MÉTODO DEBE EXISTIR
         
         return process;
     }
@@ -114,11 +105,10 @@ public class ProcessGenerator {
     public Process generatePeriodicProcess(String baseId, String name, int creationTime) {
         String id = baseId + "-" + (processCounter++);
         
-        // Proceso periódico de monitoreo
         int totalInstructions = 20 + random.nextInt(31); // 20-50
         int priority = 2 + random.nextInt(3); // 2-4
         int period = 50 + random.nextInt(51); // 50-100 ciclos
-        int deadline = period - 5; // Deadline antes del próximo período
+        int deadline = period - 5;
         
         Process process = new Process(
             id, name, ProcessType.PERIODIC,
@@ -127,33 +117,14 @@ public class ProcessGenerator {
         
         // 50% de E/S
         if (random.nextDouble() < 0.5) {
-            process.setIORequest(10, 4);
+            process.setIORequest(10, 4); // ✅ ESTE MÉTODO DEBE EXISTIR
         }
         
         return process;
     }
     
     /**
-     * Genera proceso de sistema (baja prioridad).
-     */
-    public Process generateSystemProcess() {
-        String id = "SYS" + (processCounter++);
-        
-        Process process = new Process(
-            id,
-            "Mantenimiento del Sistema",
-            ProcessType.APERIODIC,
-            80 + random.nextInt(41), // 80-120
-            5,  // Prioridad más baja
-            200 + random.nextInt(101), // Deadline largo
-            0
-        );
-        
-        return process;
-    }
-    
-    /**
-     * Genera 20 procesos aleatorios (para el botón del PDF).
+     * Genera 20 procesos aleatorios.
      */
     public Process[] generate20Processes() {
         Process[] processes = new Process[20];
@@ -164,41 +135,9 @@ public class ProcessGenerator {
     }
     
     /**
-     * Obtiene tipo de E/S aleatorio para mostrar en GUI.
-     */
-    public String getRandomIOType() {
-        return IO_OPERATIONS[random.nextInt(IO_OPERATIONS.length)];
-    }
-    
-    /**
-     * Reinicia contador (para nueva simulación).
+     * Reinicia contador.
      */
     public void resetCounter() {
         processCounter = 1000;
-    }
-    
-    /**
-     * Obtiene número de procesos generados.
-     */
-    public int getGeneratedCount() {
-        return processCounter - 1000;
-    }
-    
-    /**
-     * Genera proceso con parámetros específicos (para pruebas).
-     */
-    public Process generateCustomProcess(String id, String name, 
-                                        int instructions, int priority, 
-                                        int deadline, boolean requiresIO) {
-        Process process = new Process(
-            id, name, ProcessType.APERIODIC,
-            instructions, priority, deadline, 0
-        );
-        
-        if (requiresIO) {
-            process.setIORequest(instructions / 3, 3);
-        }
-        
-        return process;
     }
 }
