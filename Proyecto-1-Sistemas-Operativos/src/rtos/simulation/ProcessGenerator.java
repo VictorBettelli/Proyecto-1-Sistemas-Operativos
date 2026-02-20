@@ -6,7 +6,7 @@ package rtos.simulation;
 
 /**
  *
- * @author VictorB
+ * @author VictorB,luisf
  */
 
 
@@ -17,7 +17,6 @@ import rtos.model.Process;
 import rtos.model.ProcessType;
 
 /**
- * Generador de procesos aleatorios según especificaciones del PDF.
  * "Generar automáticamente un conjunto inicial de procesos con parámetros aleatorios"
  * "Botón 'Generar 20 Procesos Aleatorios'"
  */
