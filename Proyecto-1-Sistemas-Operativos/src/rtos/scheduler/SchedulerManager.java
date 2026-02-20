@@ -749,3 +749,4 @@ public class SchedulerManager {
         return 85.0; // Valor de ejemplo
     }
 }
+
