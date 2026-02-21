@@ -8,6 +8,8 @@ import javax.swing.border.TitledBorder;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.awt.event.ActionEvent;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import rtos.interrupt.InterruptHandler;
 import rtos.scheduler.SchedulerManager;
 import rtos.simulation.SimulationEngine;
@@ -34,23 +36,31 @@ public class MainFrame extends JFrame {
     private JLabel successRateLabel;
     private JLabel throughputLabel;
     private JLabel cpuUsageLabel;
+    private JLabel avgWaitingLabel;
+    private JLabel deadlineMissLabel;
+    private JLabel processCountLabel;
+    private PerformanceChartPanel miniChartPanel;
     
     // Tablas para mostrar procesos
     private JTable readyQueueTable;
     private JTable blockedQueueTable;
     private JTable suspendedQueueTable;
     private JTable runningProcessTable;
+    private JTable terminatedQueueTable;
     
     // Área de log
     private JTextArea logArea;
+    private JProgressBar memoryProgressBar;
     
     // Controles
     private JComboBox<String> algorithmComboBox;
     private JSpinner quantumSpinner;
+    private JSpinner cycleDurationSpinner;
     private JButton generateProcessesButton;
     private JButton addEmergencyButton;
     private JButton startButton;
     private JButton pauseButton;
+    private JButton tickButton;
     private JButton resetButton;
     
     // Estado de simulación
@@ -68,6 +78,7 @@ public class MainFrame extends JFrame {
         schedulerManager = simulationEngine.getSchedulerManager();
         memoryManager = simulationEngine.getMemoryManager();
         statisticsTracker = simulationEngine.getStatisticsTracker();
+        interruptHandler = simulationEngine.getInterruptHandler();
     }
     
     private void initComponents() {
@@ -110,6 +121,12 @@ public class MainFrame extends JFrame {
         controlPanel.add(new JLabel("Quantum:"));
         controlPanel.add(quantumSpinner);
         quantumSpinner.setVisible(false); // Solo visible para Round Robin
+
+        // Duración de ciclo (ms)
+        cycleDurationSpinner = new JSpinner(new SpinnerNumberModel(
+            simulationEngine.getCycleDurationMs(), 50, 5000, 50));
+        controlPanel.add(new JLabel("Cycle (ms):"));
+        controlPanel.add(cycleDurationSpinner);
         
         topPanel.add(controlPanel, BorderLayout.CENTER);
         
@@ -119,12 +136,15 @@ public class MainFrame extends JFrame {
         startButton = new JButton("▶ Start");
         pauseButton = new JButton("⏸ Pause");
         pauseButton.setEnabled(false);
+        tickButton = new JButton("⏭ Tick");
+        tickButton.setEnabled(false);
         resetButton = new JButton("⏹ Reset");
         generateProcessesButton = new JButton("Generate 20 Processes");
         addEmergencyButton = new JButton("Add Emergency Process");
         
         buttonPanel.add(startButton);
         buttonPanel.add(pauseButton);
+        buttonPanel.add(tickButton);
         buttonPanel.add(resetButton);
         buttonPanel.add(generateProcessesButton);
         buttonPanel.add(addEmergencyButton);
@@ -195,10 +215,18 @@ public class MainFrame extends JFrame {
         
         bottomPanel.add(logPanel, BorderLayout.CENTER);
         
+        // Cola de procesos terminados
+        JPanel terminatedPanel = createQueuePanel("TERMINATED PROCESSES",
+            new String[]{"ID", "Name", "Completion", "Deadline"},
+            terminatedQueueTable = new JTable());
+        terminatedPanel.setPreferredSize(new Dimension(420, 0));
+        bottomPanel.add(terminatedPanel, BorderLayout.EAST);
+        
         add(bottomPanel, BorderLayout.SOUTH);
         
         // ========== CONFIGURAR LISTENERS ==========
         setupEventListeners();
+        updateCycleDuration();
         
         // Actualizar GUI inicial
         updateAllDisplays();
@@ -267,16 +295,16 @@ public class MainFrame extends JFrame {
         panel.setBorder(BorderFactory.createTitledBorder("Memory Usage"));
         
         // Barra de progreso
-        JProgressBar memoryBar = new JProgressBar(0, 100);
-        memoryBar.setValue(0);
-        memoryBar.setStringPainted(true);
-        memoryBar.setForeground(new Color(0, 150, 0));
+        memoryProgressBar = new JProgressBar(0, 100);
+        memoryProgressBar.setValue(0);
+        memoryProgressBar.setStringPainted(true);
+        memoryProgressBar.setForeground(new Color(0, 150, 0));
         
         memoryUsageLabel = new JLabel("0% (0/10 processes)", SwingConstants.CENTER);
         memoryUsageLabel.setFont(new Font("Arial", Font.BOLD, 14));
         
         JPanel contentPanel = new JPanel(new BorderLayout());
-        contentPanel.add(memoryBar, BorderLayout.CENTER);
+        contentPanel.add(memoryProgressBar, BorderLayout.CENTER);
         contentPanel.add(memoryUsageLabel, BorderLayout.SOUTH);
         
         panel.add(contentPanel, BorderLayout.CENTER);
@@ -302,21 +330,27 @@ public class MainFrame extends JFrame {
         JPanel panel = new JPanel(new BorderLayout());
         panel.setBorder(BorderFactory.createTitledBorder("Mission Statistics"));
         
-        JPanel statsPanel = new JPanel(new GridLayout(5, 1, 5, 5));
+        JPanel statsPanel = new JPanel(new GridLayout(6, 1, 5, 5));
         
         successRateLabel = createStatLabel("Success Rate: 100%", Color.GREEN);
         throughputLabel = createStatLabel("Throughput: 0 processes/cycle", Color.BLUE);
         cpuUsageLabel = createStatLabel("CPU Usage: 0%", Color.ORANGE);
-        JLabel deadlineMissLabel = createStatLabel("Deadline Misses: 0", Color.RED);
-        JLabel processCountLabel = createStatLabel("Total Processes: 0", Color.BLACK);
+        avgWaitingLabel = createStatLabel("Avg Waiting: 0.00 cycles", Color.MAGENTA);
+        deadlineMissLabel = createStatLabel("Deadline Misses: 0", Color.RED);
+        processCountLabel = createStatLabel("Total Processes: 0", Color.BLACK);
         
         statsPanel.add(successRateLabel);
         statsPanel.add(throughputLabel);
         statsPanel.add(cpuUsageLabel);
+        statsPanel.add(avgWaitingLabel);
         statsPanel.add(deadlineMissLabel);
         statsPanel.add(processCountLabel);
         
-        panel.add(statsPanel, BorderLayout.CENTER);
+        panel.add(statsPanel, BorderLayout.NORTH);
+
+        miniChartPanel = new PerformanceChartPanel();
+        miniChartPanel.setPreferredSize(new Dimension(320, 140));
+        panel.add(miniChartPanel, BorderLayout.CENTER);
         
         // Botón para mostrar gráficas
         JButton showChartsButton = new JButton("Show Performance Charts");
@@ -336,17 +370,18 @@ public class MainFrame extends JFrame {
     private void setupEventListeners() {
         startButton.addActionListener((ActionEvent e) -> startSimulation());
         pauseButton.addActionListener((ActionEvent e) -> pauseSimulation());
+        tickButton.addActionListener((ActionEvent e) -> stepSimulationOnce());
         resetButton.addActionListener((ActionEvent e) -> resetSimulation());
         generateProcessesButton.addActionListener((ActionEvent e) -> generateRandomProcesses());
         addEmergencyButton.addActionListener((ActionEvent e) -> addEmergencyProcess());
         algorithmComboBox.addActionListener((ActionEvent e) -> changeAlgorithm());
         quantumSpinner.addChangeListener(e -> updateRoundRobinQuantum());
+        cycleDurationSpinner.addChangeListener(e -> updateCycleDuration());
     }
     
     private void setupSimulationTimer() {
-        simulationTimer = new Timer(1000, (ActionEvent e) -> { // 1 segundo por ciclo
+        simulationTimer = new Timer(200, (ActionEvent e) -> {
             if (simulationRunning && simulationEngine != null) {
-                simulationEngine.executeOneCycle();
                 updateAllDisplays();
             }
         });
@@ -365,11 +400,9 @@ public class MainFrame extends JFrame {
         updateRunningProcessTable();
         updateBlockedQueueTable();
         updateSuspendedQueueTable();
+        updateTerminatedQueueTable();
         updateMemoryUsage();
         updateStatistics();
-        
-        // Agregar entrada al log
-        logEvent("Cycle " + currentCycle + " completed");
     }
     
     private void updateReadyQueueTable() {
@@ -405,8 +438,8 @@ public class MainFrame extends JFrame {
                 model.setValueAt(current.getId(), 0, 1);
                 model.setValueAt(current.getName(), 1, 1);
                 model.setValueAt(current.getState().toString(), 2, 1);
-                model.setValueAt(current.getExecutedInstructions() + "/" + 
-                               current.getTotalInstructions(), 3, 1);
+                model.setValueAt(current.getProgramCounter() + "/" +
+                               current.getMemoryAddressRegister(), 3, 1);
                 model.setValueAt(current.getRemainingDeadline() + " cycles", 4, 1);
                 model.setValueAt(current.getExecutedInstructions() + "/" + 
                                current.getTotalInstructions(), 5, 1);
@@ -488,6 +521,29 @@ public class MainFrame extends JFrame {
             }
         }
     }
+
+    private void updateTerminatedQueueTable() {
+        if (terminatedQueueTable == null || simulationEngine == null) return;
+
+        DefaultTableModel model = (DefaultTableModel) terminatedQueueTable.getModel();
+        model.setRowCount(0);
+
+        LinkedList<Process> terminatedQueue = simulationEngine.getTerminatedQueue();
+        if (terminatedQueue == null) return;
+
+        for (int i = 0; i < terminatedQueue.size(); i++) {
+            Process p = terminatedQueue.get(i);
+            if (p == null) continue;
+
+            String deadlineStatus = p.isDeadlineMissed() ? "MISSED" : "ON TIME";
+            model.addRow(new Object[]{
+                p.getId(),
+                p.getName(),
+                p.getCompletionTime(),
+                deadlineStatus
+            });
+        }
+    }
     
     private void updateMemoryUsage() {
         if (memoryManager == null) return;
@@ -499,9 +555,8 @@ public class MainFrame extends JFrame {
         int usage = (inRAM * 100) / max;
         
         // Actualizar barra de progreso
-        JProgressBar memoryBar = findMemoryProgressBar();
-        if (memoryBar != null) {
-            memoryBar.setValue(usage);
+        if (memoryProgressBar != null) {
+            memoryProgressBar.setValue(usage);
         }
         
         memoryUsageLabel.setText(usage + "% (" + inRAM + "/" + max + " procesos)");
@@ -513,10 +568,23 @@ public class MainFrame extends JFrame {
             double successRate = statisticsTracker.getSuccessRate();
             double throughput = statisticsTracker.getThroughput();
             int cpuUsage = statisticsTracker.getCPUUtilization(); // ¡IMPORTANTE: getCPUUtilization()!
+            double avgWaiting = statisticsTracker.getAverageWaitingTime();
+            int deadlineMisses = statisticsTracker.getTotalDeadlinesMissed();
+            int totalProcesses = statisticsTracker.getTotalProcessesCreated();
 
             successRateLabel.setText(String.format("Success Rate: %.1f%%", successRate));
             throughputLabel.setText(String.format("Throughput: %.2f processes/cycle", throughput));
             cpuUsageLabel.setText(String.format("CPU Usage: %d%%", cpuUsage));
+            avgWaitingLabel.setText(String.format("Avg Waiting: %.2f cycles", avgWaiting));
+            deadlineMissLabel.setText("Deadline Misses: " + deadlineMisses);
+            processCountLabel.setText("Total Processes: " + totalProcesses);
+
+            if (miniChartPanel != null) {
+                miniChartPanel.updateData(
+                    statisticsTracker.getCPUUtilizationHistory(),
+                    statisticsTracker.getSuccessRateHistory()
+                );
+            }
 
             // También puedes usar el reporte corto para debugging
             System.out.println("Stats: " + statisticsTracker.generateShortReport());
@@ -565,11 +633,13 @@ public class MainFrame extends JFrame {
     private void startSimulation() {
         if (simulationEngine == null) return;
         
+        updateCycleDuration();
+        simulationEngine.start();
         simulationRunning = true;
         simulationTimer.start();
         startButton.setEnabled(false);
         pauseButton.setEnabled(true);
-        simulationEngine.start();
+        tickButton.setEnabled(false);
         logEvent("Simulation started");
     }
     
@@ -578,10 +648,21 @@ public class MainFrame extends JFrame {
         simulationTimer.stop();
         startButton.setEnabled(true);
         pauseButton.setEnabled(false);
+        tickButton.setEnabled(true);
         if (simulationEngine != null) {
             simulationEngine.pause();
         }
         logEvent("Simulation paused");
+    }
+
+    private void stepSimulationOnce() {
+        if (simulationEngine == null) return;
+        if (simulationRunning) return;
+        if (!simulationEngine.isPaused()) return;
+
+        simulationEngine.stepOneCycle();
+        updateAllDisplays();
+        logEvent("Manual tick executed");
     }
     
     private void resetSimulation() {
@@ -595,9 +676,12 @@ public class MainFrame extends JFrame {
         
         // Crear nueva instancia
         initManagers();
+        cycleDurationSpinner.setValue(simulationEngine.getCycleDurationMs());
+        updateCycleDuration();
         
         startButton.setEnabled(true);
         pauseButton.setEnabled(false);
+        tickButton.setEnabled(false);
         
         // Limpiar GUI
         clearAllTables();
@@ -648,11 +732,24 @@ public class MainFrame extends JFrame {
         int quantum = (Integer) quantumSpinner.getValue();
         simulationEngine.setRoundRobinQuantum(quantum);
     }
+
+    private void updateCycleDuration() {
+        if (simulationEngine == null) return;
+        int cycleMs = (Integer) cycleDurationSpinner.getValue();
+        simulationEngine.setCycleDurationMs(cycleMs);
+
+        int refreshMs = Math.max(50, Math.min(500, cycleMs / 2));
+        if (simulationTimer != null) {
+            simulationTimer.setDelay(refreshMs);
+            simulationTimer.setInitialDelay(refreshMs);
+        }
+    }
     
     private void clearAllTables() {
         ((DefaultTableModel) readyQueueTable.getModel()).setRowCount(0);
         ((DefaultTableModel) blockedQueueTable.getModel()).setRowCount(0);
         ((DefaultTableModel) suspendedQueueTable.getModel()).setRowCount(0);
+        ((DefaultTableModel) terminatedQueueTable.getModel()).setRowCount(0);
         
         // Resetear tabla de proceso en ejecución
         DefaultTableModel runningModel = (DefaultTableModel) runningProcessTable.getModel();
@@ -673,11 +770,48 @@ public class MainFrame extends JFrame {
     }
     
     private void showPerformanceCharts() {
-        JOptionPane.showMessageDialog(this,
-            "Performance charts feature will be implemented with JFreeChart\n" +
-            "Showing: CPU Utilization, Deadline Success Rate, Throughput",
-            "Performance Charts",
-            JOptionPane.INFORMATION_MESSAGE);
+        if (statisticsTracker == null) return;
+
+        JDialog dialog = new JDialog(this, "Performance Charts", false);
+        dialog.setLayout(new BorderLayout(8, 8));
+
+        JLabel header = new JLabel(
+            "CPU Utilization (naranja) vs Mission Success Rate (verde)",
+            SwingConstants.CENTER
+        );
+        header.setFont(new Font("Arial", Font.BOLD, 13));
+
+        PerformanceChartPanel bigChart = new PerformanceChartPanel();
+        bigChart.setPreferredSize(new Dimension(760, 360));
+        bigChart.updateData(
+            statisticsTracker.getCPUUtilizationHistory(),
+            statisticsTracker.getSuccessRateHistory()
+        );
+
+        dialog.add(header, BorderLayout.NORTH);
+        dialog.add(bigChart, BorderLayout.CENTER);
+
+        Timer chartTimer = new Timer(500, e -> bigChart.updateData(
+            statisticsTracker.getCPUUtilizationHistory(),
+            statisticsTracker.getSuccessRateHistory()
+        ));
+        chartTimer.start();
+
+        dialog.addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosing(WindowEvent e) {
+                chartTimer.stop();
+            }
+
+            @Override
+            public void windowClosed(WindowEvent e) {
+                chartTimer.stop();
+            }
+        });
+
+        dialog.pack();
+        dialog.setLocationRelativeTo(this);
+        dialog.setVisible(true);
     }
     
     private JProgressBar findMemoryProgressBar() {
@@ -693,6 +827,114 @@ public class MainFrame extends JFrame {
             }
         }
         return null;
+    }
+
+    private static class PerformanceChartPanel extends JPanel {
+        private int[] cpuData = new int[0];
+        private int[] successData = new int[0];
+
+        public void updateData(LinkedList<Integer> cpuHistory, LinkedList<Integer> successHistory) {
+            int cpuSize = cpuHistory != null ? cpuHistory.size() : 0;
+            int successSize = successHistory != null ? successHistory.size() : 0;
+            int size = Math.max(cpuSize, successSize);
+
+            if (size <= 0) {
+                cpuData = new int[0];
+                successData = new int[0];
+                repaint();
+                return;
+            }
+
+            cpuData = new int[size];
+            successData = new int[size];
+
+            for (int i = 0; i < size; i++) {
+                int cpu = (cpuHistory != null && i < cpuHistory.size()) ? cpuHistory.get(i) : 0;
+                int success = (successHistory != null && i < successHistory.size()) ? successHistory.get(i) : 100;
+
+                cpuData[i] = Math.max(0, Math.min(100, cpu));
+                successData[i] = Math.max(0, Math.min(100, success));
+            }
+
+            repaint();
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+            int w = getWidth();
+            int h = getHeight();
+            int left = 40;
+            int right = 16;
+            int top = 20;
+            int bottom = 28;
+
+            g2.setColor(new Color(245, 245, 245));
+            g2.fillRect(0, 0, w, h);
+
+            int plotW = Math.max(10, w - left - right);
+            int plotH = Math.max(10, h - top - bottom);
+
+            // Ejes y grilla
+            g2.setColor(new Color(220, 220, 220));
+            for (int p = 0; p <= 5; p++) {
+                int y = top + (plotH * p / 5);
+                g2.drawLine(left, y, left + plotW, y);
+            }
+
+            g2.setColor(Color.DARK_GRAY);
+            g2.drawRect(left, top, plotW, plotH);
+
+            // Etiquetas de escala Y
+            g2.setFont(new Font("Arial", Font.PLAIN, 10));
+            for (int p = 0; p <= 5; p++) {
+                int value = 100 - (p * 20);
+                int y = top + (plotH * p / 5);
+                g2.drawString(value + "%", 6, y + 4);
+            }
+
+            drawSeries(g2, cpuData, new Color(255, 140, 0), left, top, plotW, plotH);
+            drawSeries(g2, successData, new Color(0, 150, 0), left, top, plotW, plotH);
+
+            // Leyenda
+            g2.setColor(new Color(255, 140, 0));
+            g2.fillRect(left, h - 16, 10, 10);
+            g2.setColor(Color.BLACK);
+            g2.drawString("CPU", left + 14, h - 8);
+
+            g2.setColor(new Color(0, 150, 0));
+            g2.fillRect(left + 60, h - 16, 10, 10);
+            g2.setColor(Color.BLACK);
+            g2.drawString("Success", left + 74, h - 8);
+
+            g2.dispose();
+        }
+
+        private void drawSeries(Graphics2D g2, int[] series, Color color,
+                                int left, int top, int plotW, int plotH) {
+            if (series == null || series.length == 0) return;
+
+            g2.setColor(color);
+            int prevX = left;
+            int prevY = top + plotH - (series[0] * plotH / 100);
+
+            if (series.length == 1) {
+                g2.fillOval(prevX - 2, prevY - 2, 4, 4);
+                return;
+            }
+
+            for (int i = 1; i < series.length; i++) {
+                int x = left + (plotW * i / (series.length - 1));
+                int y = top + plotH - (series[i] * plotH / 100);
+                g2.drawLine(prevX, prevY, x, y);
+                prevX = x;
+                prevY = y;
+            }
+        }
     }
     
     public static void main(String[] args) {
