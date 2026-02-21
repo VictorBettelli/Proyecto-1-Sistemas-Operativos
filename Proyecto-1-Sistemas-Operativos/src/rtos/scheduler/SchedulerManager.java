@@ -45,6 +45,8 @@ public class SchedulerManager {
     private LinkedList<Process> suspendedQueue;
     private Process currentProcess;
     private int systemClock;
+    private int rrSliceCounter;
+    private String rrSliceProcessId;
     
     // ========== ESTADÍSTICAS ==========
     private int processesCreated;
@@ -89,6 +91,8 @@ public class SchedulerManager {
         this.suspendedQueue = new LinkedList<>();
         this.currentProcess = null;
         this.systemClock = 0;
+        this.rrSliceCounter = 0;
+        this.rrSliceProcessId = null;
         
         // ========== INICIALIZAR ESTADÍSTICAS ==========
         this.processesCreated = 0;
@@ -135,16 +139,49 @@ public class SchedulerManager {
     public boolean shouldPreempt(Process current) {
         if (current == null) return false;
 
-        // Obtener el siguiente proceso que está esperando en el scheduler actual
-        Process next = this.currentScheduler.getReadyQueue().peek(); 
-
-        if (next != null) {
-            // Regla de prioridad: 1 es la más alta, 5 la más baja.
-            // Si el que espera (next) tiene un número menor, es más prioritario.
-            if (next.getPriority() < current.getPriority()) {
-                return true; // ¡Sí! El proceso actual debe ser expulsado
+        // Round Robin: preempción por quantum, no por prioridad.
+        if (currentScheduler == rrScheduler) {
+            if (rrSliceProcessId == null || !rrSliceProcessId.equals(current.getId())) {
+                rrSliceProcessId = current.getId();
+                rrSliceCounter = 0;
             }
+
+            rrSliceCounter++;
+            boolean hasWaiting = !currentScheduler.getReadyQueue().isEmpty();
+
+            if (hasWaiting && rrSliceCounter >= rrScheduler.getQuantum()) {
+                rrSliceCounter = 0;
+                return true;
+            }
+            return false;
         }
+
+        // FCFS es no-preemptive.
+        if (currentScheduler == fcfsScheduler) {
+            return false;
+        }
+
+        // Obtener el candidato más prioritario del scheduler actual.
+        Process next = this.currentScheduler.getReadyQueue().peek();
+        if (next == null) return false;
+
+        // Prioridad Estática Preemptiva.
+        if (currentScheduler == priorityScheduler) {
+            return next.getPriority() < current.getPriority();
+        }
+
+        // SRT: preemptar si existe un proceso con menor tiempo restante.
+        if (currentScheduler == srtScheduler) {
+            int currentRemaining = current.getTotalInstructions() - current.getExecutedInstructions();
+            int nextRemaining = next.getTotalInstructions() - next.getExecutedInstructions();
+            return nextRemaining < currentRemaining;
+        }
+
+        // EDF: preemptar si existe un proceso con deadline más cercano.
+        if (currentScheduler == edfScheduler) {
+            return next.getRemainingDeadline() < current.getRemainingDeadline();
+        }
+
         return false;
     }
     
@@ -165,6 +202,10 @@ public class SchedulerManager {
                 }
                 
                 currentProcess = nextProcess;
+                if (currentScheduler == rrScheduler) {
+                    rrSliceProcessId = currentProcess.getId();
+                    rrSliceCounter = 0;
+                }
                 contextSwitches++;
                 addLogEntry("Cambio de contexto a: " + currentProcess.getId());
             }
@@ -347,35 +388,47 @@ public class SchedulerManager {
             currentProcessSemaphore.acquire();
 
             System.out.println("Cambiando algoritmo a: " + algorithm);
-            addLogEntry("Cambio de algoritmo a: " + algorithm);
-
-            // Mover procesos del scheduler actual al nuevo scheduler
-            Queue<Process> currentQueue = currentScheduler.getReadyQueue();
-
-            // Guardar referencia al scheduler anterior
-            Scheduler oldScheduler = currentScheduler;
-
-            // Cambiar al nuevo scheduler
+            
+            // Resolver scheduler destino
+            Scheduler targetScheduler;
             switch(algorithm) {
                 case FCFS:
-                    currentScheduler = fcfsScheduler;
+                    targetScheduler = fcfsScheduler;
                     break;
                 case ROUND_ROBIN:
-                    currentScheduler = rrScheduler;
+                    targetScheduler = rrScheduler;
                     break;
                 case SRT:
-                    currentScheduler = srtScheduler;
+                    targetScheduler = srtScheduler;
                     break;
                 case PRIORITY:
-                    currentScheduler = priorityScheduler;
+                    targetScheduler = priorityScheduler;
                     break;
                 case EDF:
-                    currentScheduler = edfScheduler;
+                    targetScheduler = edfScheduler;
+                    break;
+                default:
+                    targetScheduler = currentScheduler;
                     break;
             }
 
-            // Transferir procesos del scheduler anterior al nuevo
+            // Evitar duplicados si se solicita el mismo algoritmo
+            if (targetScheduler == currentScheduler) {
+                addLogEntry("Algoritmo ya activo: " + algorithm);
+                currentProcessSemaphore.release();
+                readyQueueSemaphore.release();
+                return;
+            }
+
+            addLogEntry("Cambio de algoritmo a: " + algorithm);
+
+            // Mover procesos ready del scheduler actual al nuevo scheduler
+            Queue<Process> currentQueue = currentScheduler.getReadyQueue();
+            Scheduler oldScheduler = currentScheduler;
+            currentScheduler = targetScheduler;
             transferProcesses(oldScheduler, currentScheduler, currentQueue);
+            rrSliceCounter = 0;
+            rrSliceProcessId = null;
 
             currentProcessSemaphore.release();
             readyQueueSemaphore.release();
@@ -390,22 +443,11 @@ public class SchedulerManager {
      * Transfiere procesos entre schedulers
      */
     private void transferProcesses(Scheduler from, Scheduler to, Queue<Process> queue) {
-        // Copiar procesos de la cola anterior
-        Queue<Process> tempQueue = new Queue<>();
-
-        // Crear una copia de los procesos
+        // Transferencia real: sacar del scheduler anterior y meter en el nuevo
         while (!queue.isEmpty()) {
             Process p = queue.dequeue();
-            tempQueue.enqueue(p);
-        }
-
-        // Transferir procesos al nuevo scheduler
-        while (!tempQueue.isEmpty()) {
-            Process p = tempQueue.dequeue();
             p.setState(ProcessState.READY); // Asegurar que esté en estado READY
             to.addProcess(p);
-            // También agregar de vuelta a la cola original para mantener consistencia
-            queue.enqueue(p);
         }
     }
     
@@ -438,12 +480,10 @@ public class SchedulerManager {
         String message = "⏰ Deadline Incumplido: Replanificando tareas";
         System.out.println(message);
         addLogEntry(message);
-        
-        // Sugerencia: Cambiar a EDF si no está ya activo
-        if (!(currentScheduler instanceof EDFScheduler)) {
-            System.out.println("   -> Cambiando a EDF para mejor manejo de deadlines");
-            switchAlgorithm(Algorithm.EDF);
-        }
+
+        // Mantener el algoritmo seleccionado por el usuario.
+        // La GUI es quien decide cuándo cambiar de política.
+        addLogEntry("Se mantiene algoritmo actual: " + currentScheduler.getName());
     }
 
     /**
@@ -616,6 +656,14 @@ public class SchedulerManager {
     public void generateInterrupt(InterruptType type, int priority, String source) {
         interruptHandler.raiseInterrupt(type, priority, source);
     }
+
+    public void setRoundRobinQuantum(int quantum) {
+        if (quantum < 1) return;
+        rrScheduler.setQuantum(quantum);
+        rrSliceCounter = 0;
+        rrSliceProcessId = null;
+        addLogEntry("Quantum RR actualizado a: " + quantum);
+    }
     
     // ========== GETTERS SEGUROS ==========
     
@@ -749,4 +797,3 @@ public class SchedulerManager {
         return 85.0; // Valor de ejemplo
     }
 }
-

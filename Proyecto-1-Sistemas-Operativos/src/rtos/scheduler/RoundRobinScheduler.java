@@ -17,14 +17,10 @@ import rtos.structures.Queue;
 public class RoundRobinScheduler implements Scheduler {
     private Queue<Process> readyQueue;
     private int quantum;
-    private int currentQuantum;
-    private Process currentProcess;
     
     public RoundRobinScheduler(int quantum) {
         this.readyQueue = new Queue<>();
         this.quantum = quantum;
-        this.currentQuantum = 0;
-        this.currentProcess = null;
     }
     
     @Override
@@ -40,35 +36,17 @@ public class RoundRobinScheduler implements Scheduler {
     
     @Override
     public Process getNextProcess() {
-        // Si hay un proceso actual y aún tiene quantum
-        if (currentProcess != null && currentQuantum < quantum) {
-            currentQuantum++;
-            return currentProcess;
+        if (readyQueue.isEmpty()) {
+            return null;
         }
-        
-        // Si se acabó el quantum o no hay proceso actual
-        if (currentProcess != null) {
-            // Devolver el proceso actual a la cola
-            currentProcess.setState(ProcessState.READY);
-            readyQueue.enqueue(currentProcess);
-        }
-        
-        // Tomar nuevo proceso
-        if (!readyQueue.isEmpty()) {
-            currentProcess = readyQueue.dequeue();
-            currentProcess.setState(ProcessState.RUNNING);
-            currentQuantum = 1;
-            return currentProcess;
-        }
-        
-        currentProcess = null;
-        currentQuantum = 0;
-        return null;
+        Process process = readyQueue.dequeue();
+        process.setState(ProcessState.RUNNING);
+        return process;
     }
     
     @Override
     public boolean isEmpty() {
-        return readyQueue.isEmpty() && currentProcess == null;
+        return readyQueue.isEmpty();
     }
     
     @Override
