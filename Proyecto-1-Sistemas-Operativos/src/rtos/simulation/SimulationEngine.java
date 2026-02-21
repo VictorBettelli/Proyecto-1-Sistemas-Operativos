@@ -12,13 +12,13 @@ package rtos.simulation;
  */
 import java.util.Random;
 import java.util.concurrent.Semaphore; // ← CAMBIO IMPORTANTE
+import rtos.interrupt.InterruptHandler;
+import rtos.interrupt.InterruptType;
+import rtos.memory.MemoryManager;
 import rtos.model.Process;
 import rtos.model.ProcessState;
 import rtos.model.ProcessType;
 import rtos.scheduler.SchedulerManager;
-import rtos.memory.MemoryManager;
-import rtos.interrupt.InterruptHandler;
-import rtos.interrupt.InterruptType;
 import rtos.statistics.StatisticsTracker;
 import rtos.structures.LinkedList;
 import rtos.structures.Queue;
@@ -30,6 +30,12 @@ import rtos.structures.Queue;
  * CON SEMÁFOROS de java.util.concurrent para exclusión mutua
  */
 public class SimulationEngine {
+    public enum CpuMode {
+        IDLE,
+        USER,
+        KERNEL
+    }
+
     // ========== TODOS LOS COMPONENTES (solo referencias) ==========
     private final SchedulerManager scheduler;
     private final MemoryManager memory;
@@ -49,6 +55,8 @@ public class SimulationEngine {
     private boolean isRunning;
     private boolean isPaused;
     private int cycleDurationMs;
+    private volatile CpuMode cpuMode;
+    private volatile boolean kernelActivityThisCycle;
     
     // Colas (solo referencias a las de otros componentes)
     private LinkedList<Process> blockedQueue;
@@ -79,10 +87,12 @@ public class SimulationEngine {
         this.isRunning = false;
         this.isPaused = false;
         this.cycleDurationMs = 1000;
+        this.cpuMode = CpuMode.IDLE;
+        this.kernelActivityThisCycle = false;
         this.blockedQueue = new LinkedList<>();
         
         // =========== GENERAR PROCESOS INICIALES CON PORCENTAJE ==========
-        int porcentajeDeseado = 100; // 30% de probabilidad de generar procesos iniciales
+        int porcentajeDeseado = 100; // Puse 100 para forzar a que se generen 
         generarProcesosInicialesConPorcentaje(porcentajeDeseado);
         
         System.out.println("✅ SimulationEngine COORDINADOR listo con semáforos de java.util.concurrent");
@@ -150,6 +160,8 @@ public class SimulationEngine {
 
         try {
             executionSemaphore.acquire();
+            kernelActivityThisCycle = false;
+            enterKernelMode();
 
             // 1. Avanzar reloj
             globalClock.tick();
@@ -186,6 +198,9 @@ public class SimulationEngine {
 
             // 11. Actualizar estadísticas
             updateStatistics();
+
+            // 12. Ajustar modo visible final del ciclo
+            refreshCpuModeAtCycleEnd();
 
             executionSemaphore.release();
 
@@ -241,6 +256,7 @@ public class SimulationEngine {
             interruptSemaphore.acquire();
             // Delegar a InterruptHandler
             if (interrupts != null && interrupts.getPendingInterruptCount() > 0) {
+                markKernelActivity();
                 // Si hay interrupciones críticas, notificar
                 logEvent("⚠️ Interrupciones pendientes: " + 
                         interrupts.getPendingInterruptCount());
@@ -413,11 +429,13 @@ public class SimulationEngine {
 
         try {
             processSemaphore.acquire();
+            enterUserMode();
 
             // Verificar si el proceso está en RAM
             if (!isProcessInRAM(currentProcess)) {
                 System.out.println("⚠️ " + currentProcess.getId() + " no está en RAM");
                 currentProcess = null;
+                markKernelActivity();
                 processSemaphore.release();
                 return false;
             }
@@ -440,6 +458,7 @@ public class SimulationEngine {
             // 🥇 PRIMERO: Verificar si TERMINÓ
             if (finished || executedNow >= total) {
                 System.out.println("   ✅ " + currentProcess.getId() + " COMPLETÓ TODAS LAS INSTRUCCIONES");
+                markKernelActivity();
                 processSemaphore.release();
                 return finishCurrentProcess();
             }
@@ -448,6 +467,7 @@ public class SimulationEngine {
             if (currentProcess.isRequiresIO() &&
                 executedNow == currentProcess.getIoStartCycle()) {
                 System.out.println("   ⏳ " + currentProcess.getId() + " inicia E/S");
+                markKernelActivity();
                 processSemaphore.release();
                 startIOForCurrentProcess();
                 return false;
@@ -456,6 +476,7 @@ public class SimulationEngine {
             // 🥉 TERCERO: Verificar preempción (solo si no terminó)
             if (scheduler.shouldPreempt(currentProcess)) {
                 System.out.println("   ⚠️ Preemptando " + currentProcess.getId());
+                markKernelActivity();
                 currentProcess.setState(ProcessState.READY);
                 scheduler.addProcess(currentProcess);
                 currentProcess = null;
@@ -484,9 +505,12 @@ public class SimulationEngine {
             // Delegar a Scheduler (Scheduler maneja su propio semáforo)
             Process next = scheduler.getNextProcess();
             if (next != null) {
+                markKernelActivity();
                 currentProcess = next;
                 currentProcess.setState(ProcessState.RUNNING);
                 logEvent("⚡ Ejecutando: " + currentProcess.getId());
+            } else {
+                setCpuMode(CpuMode.IDLE);
             }
             
             processSemaphore.release();
@@ -501,6 +525,7 @@ public class SimulationEngine {
      */
     private boolean finishCurrentProcess() {
         if (currentProcess == null) return false;
+        markKernelActivity();
         
         String processId = currentProcess.getId();
         int executed = currentProcess.getExecutedInstructions();
@@ -563,6 +588,7 @@ public class SimulationEngine {
         if (currentProcess == null) return;
 
         try {
+            markKernelActivity();
             logEvent("⏳ E/S iniciada: " + currentProcess.getId());
 
             // Registrar el ciclo de bloqueo
@@ -684,6 +710,7 @@ public class SimulationEngine {
     private void handleIncomingInterrupt(rtos.interrupt.InterruptRequest request) {
         try {
             interruptSemaphore.acquire();
+            markKernelActivity();
             
             logEvent("⚡ Interrupción recibida: " + request.getType());
             
@@ -754,6 +781,7 @@ public class SimulationEngine {
         try {
             executionSemaphore.acquire();
             isRunning = false;
+            setCpuMode(CpuMode.IDLE);
             executionSemaphore.release();
             logEvent("⏹️ Simulación detenida");
         } catch (InterruptedException e) {
@@ -858,14 +886,42 @@ public class SimulationEngine {
     }
     
     public void changeAlgorithm(String algorithm) {
-        try {
-            rtos.scheduler.SchedulerManager.Algorithm algo = 
-                rtos.scheduler.SchedulerManager.Algorithm.valueOf(algorithm);
-            scheduler.switchAlgorithm(algo);
-            logEvent("🔀 Algoritmo cambiado a: " + algorithm);
-        } catch (IllegalArgumentException e) {
-            System.out.println("❌ Algoritmo no válido: " + algorithm);
+        if (algorithm == null) return;
+
+        String normalized = algorithm.trim().toUpperCase();
+        rtos.scheduler.SchedulerManager.Algorithm algo;
+
+        switch (normalized) {
+            case "FCFS":
+                algo = rtos.scheduler.SchedulerManager.Algorithm.FCFS;
+                break;
+            case "ROUND ROBIN":
+            case "ROUND_ROBIN":
+            case "RR":
+                algo = rtos.scheduler.SchedulerManager.Algorithm.ROUND_ROBIN;
+                break;
+            case "SRT":
+                algo = rtos.scheduler.SchedulerManager.Algorithm.SRT;
+                break;
+            case "PRIORITY":
+            case "PRIORIDAD":
+                algo = rtos.scheduler.SchedulerManager.Algorithm.PRIORITY;
+                break;
+            case "EDF":
+                algo = rtos.scheduler.SchedulerManager.Algorithm.EDF;
+                break;
+            default:
+                System.out.println("❌ Algoritmo no válido: " + algorithm);
+                return;
         }
+
+        scheduler.switchAlgorithm(algo);
+        logEvent("🔀 Algoritmo cambiado a: " + algorithm);
+    }
+
+    public void setRoundRobinQuantum(int quantum) {
+        scheduler.setRoundRobinQuantum(quantum);
+        logEvent("⏱️ Quantum RR ajustado a: " + quantum);
     }
     
     // ========== GETTERS SEGUROS CON SEMÁFOROS ==========
@@ -876,6 +932,21 @@ public class SimulationEngine {
     
     public boolean isPaused() { 
         return isPaused; 
+    }
+
+    public CpuMode getCpuMode() {
+        return cpuMode;
+    }
+
+    public String getCpuModeLabel() {
+        switch (cpuMode) {
+            case KERNEL:
+                return "KERNEL";
+            case USER:
+                return "USUARIO";
+            default:
+                return "IDLE";
+        }
     }
     
     public int getCurrentCycle() { 
@@ -943,5 +1014,41 @@ public class SimulationEngine {
         String logMsg = "[Ciclo " + globalClock.getCurrentCycle() + "] " + message;
         System.out.println(logMsg);
         scheduler.logEvent(logMsg);
+    }
+
+    private void setCpuMode(CpuMode mode) {
+        this.cpuMode = mode;
+    }
+
+    private void enterUserMode() {
+        setCpuMode(CpuMode.USER);
+    }
+
+    private void enterKernelMode() {
+        setCpuMode(CpuMode.KERNEL);
+    }
+
+    private void markKernelActivity() {
+        kernelActivityThisCycle = true;
+        enterKernelMode();
+    }
+
+    private void refreshCpuModeAtCycleEnd() {
+        if (kernelActivityThisCycle) {
+            enterKernelMode();
+            return;
+        }
+
+        try {
+            processSemaphore.acquire();
+            if (currentProcess != null) {
+                enterUserMode();
+            } else {
+                setCpuMode(CpuMode.IDLE);
+            }
+            processSemaphore.release();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 }
