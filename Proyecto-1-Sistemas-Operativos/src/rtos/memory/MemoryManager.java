@@ -105,8 +105,10 @@ public class MemoryManager {
                 return null;
             }
             
-            Process candidate = null;
-            int farthestDeadline = -1;
+            Process blockedCandidate = null;
+            int blockedFarthestDeadline = -1;
+            Process readyCandidate = null;
+            int readyFarthestDeadline = -1;
             
             for (int i = 0; i < processesInRAM.size(); i++) {
                 Process p = processesInRAM.get(i);
@@ -122,15 +124,22 @@ public class MemoryManager {
                     continue;
                 }
                 
-                // Seleccionar deadline más lejano
-                if (p.getRemainingDeadline() > farthestDeadline) {
-                    farthestDeadline = p.getRemainingDeadline();
-                    candidate = p;
+                // Preferir procesos BLOCKED para poblar cola BLOCKED_SUSPENDED
+                if (p.getState() == ProcessState.BLOCKED) {
+                    if (p.getRemainingDeadline() > blockedFarthestDeadline) {
+                        blockedFarthestDeadline = p.getRemainingDeadline();
+                        blockedCandidate = p;
+                    }
+                } else {
+                    if (p.getRemainingDeadline() > readyFarthestDeadline) {
+                        readyFarthestDeadline = p.getRemainingDeadline();
+                        readyCandidate = p;
+                    }
                 }
             }
             
             ramSemaphore.release();
-            return candidate;
+            return blockedCandidate != null ? blockedCandidate : readyCandidate;
             
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -319,6 +328,47 @@ public class MemoryManager {
             
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Mueve un proceso bloqueado de RAM a BLOCKED_SUSPENDED para liberar memoria.
+     * @return true si fue movido exitosamente.
+     */
+    public boolean moveBlockedProcessToSuspended(Process process) {
+        if (process == null) return false;
+
+        boolean operationAcquired = false;
+        try {
+            operationSemaphore.acquire();
+            operationAcquired = true;
+
+            if (process.getState() != ProcessState.BLOCKED) {
+                return false;
+            }
+
+            ramSemaphore.acquire();
+            boolean wasInRAM = processesInRAM.remove(process);
+            ramSemaphore.release();
+
+            if (!wasInRAM) {
+                return false;
+            }
+
+            process.setState(ProcessState.BLOCKED_SUSPENDED);
+
+            blockedSuspendSemaphore.acquire();
+            blockedSuspendedQueue.add(process);
+            blockedSuspendSemaphore.release();
+
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        } finally {
+            if (operationAcquired) {
+                operationSemaphore.release();
+            }
         }
     }
     

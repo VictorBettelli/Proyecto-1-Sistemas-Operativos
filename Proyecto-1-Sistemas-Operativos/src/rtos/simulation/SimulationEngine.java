@@ -11,7 +11,7 @@ package rtos.simulation;
  * @author VictorB,luisf
  */
 import java.util.Random;
-import java.util.concurrent.Semaphore; // ← CAMBIO IMPORTANTE
+import java.util.concurrent.Semaphore; 
 import rtos.interrupt.InterruptHandler;
 import rtos.interrupt.InterruptType;
 import rtos.memory.MemoryManager;
@@ -22,7 +22,6 @@ import rtos.scheduler.SchedulerManager;
 import rtos.statistics.StatisticsTracker;
 import rtos.structures.LinkedList;
 import rtos.structures.Queue;
-// import rtos.utils.Semaphore; ← ELIMINAR ESTA LÍNEA
 
 /**
  * CON SEMÁFOROS de java.util.concurrent para exclusión mutua
@@ -52,12 +51,15 @@ public class SimulationEngine {
     private Process currentProcess;      // Proceso en CPU (referencia)
     private boolean isRunning;
     private boolean isPaused;
-    private int cycleDurationMs;
+    private volatile int cycleDurationMs;
     private volatile CpuMode cpuMode;
     private volatile boolean kernelActivityThisCycle;
+    private volatile boolean instructionExecutedThisCycle;
+    private Thread simulationThread;
     
     // Colas (solo referencias a las de otros componentes)
     private LinkedList<Process> blockedQueue;
+    private LinkedList<Process> terminatedQueue;
     
     // Callback para estadísticas
     private StatsCallback statsCallback;
@@ -87,7 +89,9 @@ public class SimulationEngine {
         this.cycleDurationMs = 1000;
         this.cpuMode = CpuMode.IDLE;
         this.kernelActivityThisCycle = false;
+        this.instructionExecutedThisCycle = false;
         this.blockedQueue = new LinkedList<>();
+        this.terminatedQueue = new LinkedList<>();
         
         // =========== GENERAR PROCESOS INICIALES CON PORCENTAJE ==========
         int porcentajeDeseado = 100; // Puse 100 para forzar a que se generen 
@@ -154,11 +158,24 @@ public class SimulationEngine {
      * CON SEMÁFOROS para protección de recursos.
      */
     public void executeOneCycle() {
-        if (!isRunning || isPaused) return;
+        executeOneCycleInternal(false);
+    }
 
+    /**
+     * Ejecuta exactamente un ciclo aunque la simulación esté en pausa.
+     * Se usa para "tick manual".
+     */
+    public void stepOneCycle() {
+        executeOneCycleInternal(true);
+    }
+
+    private void executeOneCycleInternal(boolean allowWhenPaused) {
+        if (!isRunning) return;
+        if (!allowWhenPaused && isPaused) return;
         try {
             executionSemaphore.acquire();
             kernelActivityThisCycle = false;
+            instructionExecutedThisCycle = false;
             enterKernelMode();
 
             // 1. Avanzar reloj
@@ -196,6 +213,11 @@ public class SimulationEngine {
 
             // 11. Actualizar estadísticas
             updateStatistics();
+
+            // 11.1 Registrar ciclo ocioso (si no se ejecutó ninguna instrucción de usuario)
+            if (!instructionExecutedThisCycle && statistics != null) {
+                statistics.recordIdleCycle();
+            }
 
             // 12. Ajustar modo visible final del ciclo
             refreshCpuModeAtCycleEnd();
@@ -336,6 +358,9 @@ public class SimulationEngine {
             // Verificar cada proceso bloqueado
             for (int i = 0; i < blockedQueue.size(); i++) {
                 Process p = blockedQueue.get(i);
+                if (p == null || p.getState() != ProcessState.BLOCKED) {
+                    continue;
+                }
 
                 // Verificar si completó la E/S
                 if (p.isIOCompleted(currentCycle)) {
@@ -373,10 +398,52 @@ public class SimulationEngine {
     }
     
     private void manageMemory() {
+        // 0. Sincronizar procesos que fueron suspendidos estando bloqueados
+        syncBlockedSuspendedFromBlockedQueue();
+
+        // 0.1 Procesar E/S que termina mientras está BLOCKED_SUSPENDED
+        processBlockedSuspendedIO();
+
         // Delegar TODO a MemoryManager
         // MemoryManager debe manejar sus propios semáforos internamente
         // 1. Si hay procesos suspendidos y espacio, activar
         memory.tryActivateSuspendedProcesses();
+    }
+
+    private void syncBlockedSuspendedFromBlockedQueue() {
+        try {
+            queueSemaphore.acquire();
+
+            for (int i = 0; i < blockedQueue.size(); i++) {
+                Process p = blockedQueue.get(i);
+                if (p != null && p.getState() == ProcessState.BLOCKED_SUSPENDED) {
+                    blockedQueue.remove(p);
+                    i--;
+                    logEvent("⏸️ Proceso movido a BLOCKED_SUSPENDED: " + p.getId());
+                }
+            }
+
+            queueSemaphore.release();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void processBlockedSuspendedIO() {
+        LinkedList<Process> blockedSuspended = memory.getBlockedSuspendedQueue();
+        if (blockedSuspended == null || blockedSuspended.isEmpty()) return;
+
+        int currentCycle = globalClock.getCurrentCycle();
+        for (int i = 0; i < blockedSuspended.size(); i++) {
+            Process p = blockedSuspended.get(i);
+            if (p == null) continue;
+
+            if (p.isIOCompleted(currentCycle)) {
+                memory.processIOCompleted(p);
+                logEvent("🔄 E/S completa en suspendido: " + p.getId() +
+                        " (BLOCKED_SUSPENDED -> READY_SUSPENDED)");
+            }
+        }
     }
     
     /**
@@ -445,6 +512,7 @@ public class SimulationEngine {
 
             // Ejecutar instrucción
             boolean finished = currentProcess.executeInstruction();
+            instructionExecutedThisCycle = true;
             statistics.recordInstructionExecution(1);
 
             int executedNow = currentProcess.getExecutedInstructions();
@@ -549,6 +617,7 @@ public class SimulationEngine {
         
         // 4. Liberar el proceso
         System.out.println("   🧹 Proceso " + processId + " ELIMINADO del sistema");
+        recordTerminatedProcess(currentProcess);
         currentProcess = null;
         
         // 5. Intentar activar procesos suspendidos
@@ -587,22 +656,32 @@ public class SimulationEngine {
 
         try {
             markKernelActivity();
-            logEvent("⏳ E/S iniciada: " + currentProcess.getId());
+            Process blockedProcess = currentProcess;
+            logEvent("⏳ E/S iniciada: " + blockedProcess.getId());
 
             // Registrar el ciclo de bloqueo
-            currentProcess.setState(ProcessState.BLOCKED);
-            currentProcess.setBlockedTime(globalClock.getCurrentCycle());
-            currentProcess.setIoCompletionTime(
-                globalClock.getCurrentCycle() + currentProcess.getIoDuration()
+            blockedProcess.setState(ProcessState.BLOCKED);
+            blockedProcess.setBlockedTime(globalClock.getCurrentCycle());
+            blockedProcess.setIoCompletionTime(
+                globalClock.getCurrentCycle() + blockedProcess.getIoDuration()
             );
 
             // Adquirir semáforo para la cola bloqueada
             queueSemaphore.acquire();
 
             // Añadir a la cola de bloqueados
-            blockedQueue.add(currentProcess);
-            logEvent("📋 Proceso bloqueado: " + currentProcess.getId() + 
+            blockedQueue.add(blockedProcess);
+            logEvent("📋 Proceso bloqueado: " + blockedProcess.getId() + 
                     " | Cola blocked: " + blockedQueue.size());
+
+            // Si RAM está saturada, mover bloqueo a memoria secundaria
+            if (!memory.hasSpaceInRAM()) {
+                boolean moved = memory.moveBlockedProcessToSuspended(blockedProcess);
+                if (moved) {
+                    blockedQueue.remove(blockedProcess);
+                    logEvent("⏸️ Proceso movido a BLOCKED_SUSPENDED: " + blockedProcess.getId());
+                }
+            }
 
             queueSemaphore.release();
 
@@ -676,6 +755,7 @@ public class SimulationEngine {
             // Delegar limpieza a componentes
             memory.processTerminated(process);
             statistics.recordProcessCompletion(process);
+            recordTerminatedProcess(process);
             
             logEvent("✅ Proceso terminado: " + process.getId());
             
@@ -747,6 +827,7 @@ public class SimulationEngine {
             isRunning = true;
             isPaused = false;
             executionSemaphore.release();
+            ensureSimulationThread();
             logEvent("🚀 Simulación iniciada");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -781,6 +862,9 @@ public class SimulationEngine {
             isRunning = false;
             setCpuMode(CpuMode.IDLE);
             executionSemaphore.release();
+            if (simulationThread != null) {
+                simulationThread.interrupt();
+            }
             logEvent("⏹️ Simulación detenida");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -950,6 +1034,18 @@ public class SimulationEngine {
     public int getCurrentCycle() { 
         return globalClock.getCurrentCycle(); 
     }
+
+    public int getCycleDurationMs() {
+        return cycleDurationMs;
+    }
+
+    public void setCycleDurationMs(int cycleDurationMs) {
+        if (cycleDurationMs < 10) {
+            cycleDurationMs = 10;
+        }
+        this.cycleDurationMs = cycleDurationMs;
+        logEvent("⏱️ Duración de ciclo ajustada a: " + cycleDurationMs + " ms");
+    }
     
     public Process getCurrentProcess() { 
         try {
@@ -973,6 +1069,21 @@ public class SimulationEngine {
             LinkedList<Process> copy = new LinkedList<>();
             for (int i = 0; i < blockedQueue.size(); i++) {
                 copy.add(blockedQueue.get(i));
+            }
+            queueSemaphore.release();
+            return copy;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new LinkedList<>();
+        }
+    }
+
+    public LinkedList<Process> getTerminatedQueue() {
+        try {
+            queueSemaphore.acquire();
+            LinkedList<Process> copy = new LinkedList<>();
+            for (int i = 0; i < terminatedQueue.size(); i++) {
+                copy.add(terminatedQueue.get(i));
             }
             queueSemaphore.release();
             return copy;
@@ -1045,6 +1156,44 @@ public class SimulationEngine {
                 setCpuMode(CpuMode.IDLE);
             }
             processSemaphore.release();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void ensureSimulationThread() {
+        if (simulationThread != null && simulationThread.isAlive()) {
+            return;
+        }
+
+        simulationThread = new Thread(() -> {
+            while (isRunning) {
+                if (!isPaused) {
+                    executeOneCycle();
+                }
+
+                try {
+                    Thread.sleep(cycleDurationMs);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }, "SimulationClockThread");
+        simulationThread.setDaemon(true);
+        simulationThread.start();
+    }
+
+    private void recordTerminatedProcess(Process process) {
+        if (process == null) return;
+
+        try {
+            queueSemaphore.acquire();
+            terminatedQueue.add(process);
+            if (terminatedQueue.size() > 200) {
+                terminatedQueue.remove(0);
+            }
+            queueSemaphore.release();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
